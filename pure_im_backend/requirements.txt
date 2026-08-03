@@ -1,0 +1,25 @@
+# 纯IM系统依赖
+
+# Web框架
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+
+# 数据库
+motor>=3.3.0  # MongoDB异步驱动
+pymongo>=4.5.0
+
+# 认证
+python-jose[cryptography]>=3.3.0  # JWT
+bcrypt>=4.0.0  # 密码哈希
+passlib>=1.7.4
+
+# 数据验证
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+email-validator>=2.0.0  # pydantic.EmailStr 依赖
+
+# 文件处理
+python-multipart>=0.0.6  # 文件上传
+
+# 工具
+jinja2>=3.1.0  # 模板渲染

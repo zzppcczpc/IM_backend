@@ -1,0 +1,72 @@
+from datetime import datetime
+from typing import Optional, List
+
+from pydantic import BaseModel, Field
+
+
+class MessageData(BaseModel):
+    id: str
+    type: str
+    content: str
+    sender_id: str
+    sender_username: str
+    sender_avatar: Optional[str] = None
+    group_id: str
+    cite: Optional[dict] = None
+    at_list: List[str] = Field(default_factory=list)
+    read_list: List[str] = Field(default_factory=list)
+    is_revoke: bool = False
+    is_deleted: bool = False
+    created_at: datetime
+    duration: Optional[float] = None
+    revoke_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
+
+
+class MessageResponse(BaseModel):
+    id: str
+    type: str
+    content: str
+    sender_id: str
+    sender_username: str
+    sender_avatar: Optional[str] = None
+    group_id: str
+    cite: Optional[dict] = None
+    at_list: List[str] = Field(default_factory=list)
+    read_list: List[str] = Field(default_factory=list)
+    is_revoke: bool = False
+    is_deleted: bool = False
+    created_at: datetime
+    duration: Optional[float] = None
+    revoke_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
+    is_read: bool = False
+
+
+class StopMessage(BaseModel):
+    group_id: str
+    message_id: str
+
+
+class SendMessage(BaseModel):
+    group_id: str
+    content: str
+    type: str = "text"
+    cite: Optional[str] = None
+    at_list: List[str] = Field(default_factory=list)
+
+
+class HistoryRequest(BaseModel):
+    group_id: str
+    limit: int = 20
+    before_id: Optional[str] = None
+
+
+class OfflineRequest(BaseModel):
+    group_id: str
+    last_message_id: Optional[str] = None
+
+
+class MarkReadRequest(BaseModel):
+    group_id: str
+    message_ids: List[str] = Field(default_factory=list)

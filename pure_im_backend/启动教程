@@ -1,0 +1,43 @@
+
+1、先启动mongodb
+Start-Service MongoDB
+
+检查有没有启动
+Get-Service MongoDB
+
+果看到 Running，再检查端口：
+netstat -ano | findstr 27017
+
+
+启动项目
+cd "C:\Users\22077\Desktop\deeptalk\pure_im_backend"
+conda activate learn
+python run.py
+
+
+http://localhost:8000/health
+http://localhost:8000/docs
+
+
+2、docker启动
+cd "C:\Users\22077\Desktop\deeptalk\pure_im_backend"
+docker compose up -d mongodb
+conda activate learn
+python run.py
+
+
+检查 MongoDB 状态：
+docker compose ps
+如果看到：
+pure-im-mongodb   im-mongodb:7.0   Up ... healthy
+就说明数据库好了。
+停止项目时：
+# 停后端：在运行 python run.py 的窗口按 Ctrl+C
+
+# 停 MongoDB
+docker compose down
+
+启动后会有两个测试号
+test1@example.com / 123456
+test2@example.com / 123456
+和一个测试群
