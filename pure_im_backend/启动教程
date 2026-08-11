@@ -1,43 +1,73 @@
+Pure IM 启动教程
 
-1、先启动mongodb
-Start-Service MongoDB
+当前项目目录：
+C:\Users\zlf\Desktop\Project
 
-检查有没有启动
-Get-Service MongoDB
+一、启动项目（推荐）
 
-果看到 Running，再检查端口：
-netstat -ano | findstr 27017
+1. 打开 Docker Desktop，确认 Docker 已经启动。
 
+2. 进入项目根目录：
 
-启动项目
-cd "C:\Users\22077\Desktop\deeptalk\pure_im_backend"
-conda activate learn
-python run.py
+cd C:\Users\zlf\Desktop\Project
 
+3. 一键启动前端、后端和 MongoDB：
 
-http://localhost:8000/health
-http://localhost:8000/docs
+docker compose up -d --build
 
+4. 查看服务状态：
 
-2、docker启动
-cd "C:\Users\22077\Desktop\deeptalk\pure_im_backend"
-docker compose up -d mongodb
-conda activate learn
-python run.py
-
-
-检查 MongoDB 状态：
 docker compose ps
-如果看到：
-pure-im-mongodb   im-mongodb:7.0   Up ... healthy
-就说明数据库好了。
-停止项目时：
-# 停后端：在运行 python run.py 的窗口按 Ctrl+C
 
-# 停 MongoDB
-docker compose down
+看到以下服务都是 Up，且 mongodb 是 healthy，就说明启动成功：
 
-启动后会有两个测试号
+- pure-im-frontend
+- pure-im-backend
+- pure-im-mongodb
+
+二、访问地址
+
+前端页面：
+http://localhost:5173
+
+后端健康检查：
+http://localhost:8001/health
+
+后端接口文档：
+http://localhost:8001/docs
+
+MongoDB：
+localhost:27017
+
+三、测试账号
+
 test1@example.com / 123456
 test2@example.com / 123456
-和一个测试群
+
+四、停止项目
+
+在项目根目录执行：
+
+docker compose down
+
+五、常见问题
+
+1. 如果提示端口被占用，检查这些端口：
+
+- 5173：前端
+- 8001：后端
+- 27017：MongoDB
+
+2. 如果服务没起来，查看日志：
+
+docker compose logs backend
+docker compose logs frontend
+docker compose logs mongodb
+
+3. 如果只是改了前端代码，先重新打包前端，再重启：
+
+cd C:\Users\zlf\Desktop\Project\IM_front\front_IM
+npm run build
+
+cd C:\Users\zlf\Desktop\Project
+docker compose up -d --build frontend
