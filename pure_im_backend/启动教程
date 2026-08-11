@@ -1,73 +1,36 @@
+这个项目由三个部分组成：前端、后端、MongoDB外部依赖
 Pure IM 启动教程
 
-当前项目目录：
-C:\Users\zlf\Desktop\Project
+1、启动mongodb
+先打开docker desktop
 
-一、启动项目（推荐）
+cd C:\Users\zlf\Desktop\1111\IM_backend\pure_im_backend
+docker compose up -d mongodb
 
-1. 打开 Docker Desktop，确认 Docker 已经启动。
 
-2. 进入项目根目录：
+2、启动后端
+conda activate learn
 
-cd C:\Users\zlf\Desktop\Project
+#后面的是路径，你项目地址变了后面cd 的路径也要变
+cd C:\Users\zlf\Desktop\1111\IM_backend\pure_im_backend
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
-3. 一键启动前端、后端和 MongoDB：
 
-docker compose up -d --build
 
-4. 查看服务状态：
-
-docker compose ps
-
-看到以下服务都是 Up，且 mongodb 是 healthy，就说明启动成功：
-
-- pure-im-frontend
-- pure-im-backend
-- pure-im-mongodb
-
-二、访问地址
-
-前端页面：
-http://localhost:5173
-
+#后端启动完后，看看这两地址能不能打开，能打开才算是真的启动了
 后端健康检查：
-http://localhost:8001/health
+http://localhost:8000/health
 
 后端接口文档：
-http://localhost:8001/docs
+http://localhost:8000/docs
 
-MongoDB：
-localhost:27017
+3、启动前端
 
-三、测试账号
+#后面的是路径，你项目地址变了后面cd 的路径也要变
+cd C:\Users\zlf\Desktop\1111\IM_front\front_IM
+npm run dev
 
-test1@example.com / 123456
-test2@example.com / 123456
 
-四、停止项目
 
-在项目根目录执行：
 
-docker compose down
 
-五、常见问题
-
-1. 如果提示端口被占用，检查这些端口：
-
-- 5173：前端
-- 8001：后端
-- 27017：MongoDB
-
-2. 如果服务没起来，查看日志：
-
-docker compose logs backend
-docker compose logs frontend
-docker compose logs mongodb
-
-3. 如果只是改了前端代码，先重新打包前端，再重启：
-
-cd C:\Users\zlf\Desktop\Project\IM_front\front_IM
-npm run build
-
-cd C:\Users\zlf\Desktop\Project
-docker compose up -d --build frontend

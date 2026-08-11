@@ -1,0 +1,5 @@
+INFO:     Started server process [28772]
+INFO:     Waiting for application startup.
+2026-08-10 22:55:16,885 - im_backend - INFO - ≤‚ ‘’À∫≈“—≥ı ºªØ: test1@example.com / 123456, test2@example.com / 123456
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)

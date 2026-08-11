@@ -1,6 +1,6 @@
 services:
   mongodb:
-    image: im-mongodb:7.0
+    image: mongo:7.0
     container_name: pure-im-mongodb
     restart: unless-stopped
     ports:

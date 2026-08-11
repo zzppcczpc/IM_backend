@@ -103,6 +103,12 @@ async def create_group(
 
         await db.groups.insert_one(new_group_data)
 
+        # 通知所有群成员刷新群列表（创建者前端已自行刷新，这里通知其他成员）
+        await connection_dic.broadcast(
+            group_data.member_ids,
+            json.dumps({"type": "groups_updated"})
+        )
+
         # 私聊设置对方名字为群名
         if group_data.type == "private":
             new_group_data = to_client_data(new_group_data)
@@ -111,6 +117,18 @@ async def create_group(
                 {"id": new_group_data["member_ids"][0]}
             )
             new_group_data["name"] = user["username"]
+
+            # 新增：通知被邀请方自动打开私聊窗口（解决"第一次聊天要点一下私聊才能继续对话"的问题）
+            other_member_id = new_group_data["member_ids"][0]
+            await connection_dic.broadcast(
+                [other_member_id],
+                json.dumps({
+                    "type": "private_chat_opened",
+                    "group_id": new_group_data["id"],
+                    "inviter_id": current_user.id,
+                    "inviter_name": current_user.username
+                })
+            )
 
         return success(
             data=GroupCreateResponse(**to_client_data(new_group_data)).model_dump(),
@@ -149,6 +167,12 @@ async def add_member_to_group(
         await db.groups.update_one(
             {"id": post_data.group_id},
             {"$push": {"member_ids": {"$each": post_data.user_ids}}},
+        )
+
+        # 通知被添加的用户刷新群列表（否则他们不知道被拉进了新群，发消息会报"你不在该群组中"）
+        await connection_dic.broadcast(
+            post_data.user_ids,
+            json.dumps({"type": "groups_updated"})
         )
 
         return success(message="添加成功")
@@ -215,6 +239,20 @@ async def leave_group(
             {"$pull": {"member_ids": current_user.id}},
         )
 
+        # 新增：如果是私聊，退出后只剩一个人，直接解散该私聊群
+        if group.get("type") == "private":
+            await db.groups.update_one(
+                {"id": group_id},
+                {"$set": {"is_dissolved": True}},
+            )
+            # 通知对方私聊已解散
+            other_member_ids = [mid for mid in group["member_ids"] if mid != current_user.id]
+            await connection_dic.broadcast(
+                other_member_ids,
+                json.dumps({"type": "group_dissolved", "group_id": group_id})
+            )
+            return success(message="已删除聊天")
+
         return success(message="退出成功")
     except Exception as e:
         logger.error(f"退出群组出错: {e}")
@@ -242,6 +280,13 @@ async def dissolve_group(
         await db.groups.update_one(
             {"id": group_uuid},
             {"$set": {"is_dissolved": True}},
+        )
+
+        # 通知所有群成员群已解散，前端收到后自动移除该群
+        member_ids = group.get("member_ids", [])
+        await connection_dic.broadcast(
+            member_ids,
+            json.dumps({"type": "group_dissolved", "group_id": group_uuid})
         )
 
         if group.get("type") == "private":
@@ -302,6 +347,8 @@ async def get_groups(
             # 私聊处理
             if group.get("type") == "private":
                 group["member_ids"].remove(current_user.id)
+                if not group["member_ids"]:
+                    continue  # 修改：私聊群成员为空时跳过，避免 index out of range（之前退出私聊后 member_ids 为空，访问 [0] 就报错）
                 user = await manage_db.users.find_one(
                     {"id": group["member_ids"][0]}
                 )

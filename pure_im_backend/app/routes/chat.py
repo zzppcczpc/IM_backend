@@ -337,6 +337,15 @@ async def websocket_endpoint(
                         })
                         continue
 
+                    # 检查群是否已解散
+                    group = await manage_db.groups.find_one({"id": group_id})
+                    if not group or group.get("is_dissolved"):
+                        await websocket.send_json({
+                            "type": "error",
+                            "content": {"message": "该群已解散"}
+                        })
+                        continue
+
                     # 创建并广播消息
                     message_type = data.get("msg_type")
                     if not message_type:
