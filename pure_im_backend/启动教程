@@ -4,7 +4,7 @@ Pure IM 启动教程
 1、启动mongodb
 先打开docker desktop
 
-cd C:\Users\zlf\Desktop\1111\IM_backend\pure_im_backend
+cd C:\Users\zlf\Desktop\IM\IM_backend\pure_im_backend
 docker compose up -d mongodb
 
 
@@ -12,7 +12,7 @@ docker compose up -d mongodb
 conda activate learn
 
 #后面的是路径，你项目地址变了后面cd 的路径也要变
-cd C:\Users\zlf\Desktop\1111\IM_backend\pure_im_backend
+cd C:\Users\zlf\Desktop\IM\IM_backend\pure_im_backend
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 
@@ -27,7 +27,7 @@ http://localhost:8000/docs
 3、启动前端
 
 #后面的是路径，你项目地址变了后面cd 的路径也要变
-cd C:\Users\zlf\Desktop\1111\IM_front\front_IM
+cd C:\Users\zlf\Desktop\IM\IM_front\front_IM
 npm run dev
 
 
