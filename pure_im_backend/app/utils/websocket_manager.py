@@ -8,6 +8,7 @@ from fastapi import WebSocket
 
 from ..models.user import User
 from .log import logger
+from ..database import get_database
 
 
 class ConnectionInfo:
@@ -142,9 +143,22 @@ class ConnectionManager:
                 # 用户完全离线时清理
                 if not user_info.is_online():
                     logger.info(f"用户 {user_info.username}({user_id}) 已完全离线")
+                    # 更新用户离线时间
+                    await self._update_offline_time(user_id)
                     # 不删除用户信息，保留最后活跃时间
 
         logger.info(f"{user_id} 断开一个连接")
+
+    async def _update_offline_time(self, user_id: str):
+        """更新用户离线时间"""
+        try:
+            db = await get_database()
+            await db.users.update_one(
+                {"id": user_id},
+                {"$set": {"last_offline_time": datetime.now()}}
+            )
+        except Exception as e:
+            logger.error(f"更新离线时间失败: {e}")
 
     async def send_to_user(self, user_id: str, message: dict) -> bool:
         """

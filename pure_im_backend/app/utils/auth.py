@@ -17,7 +17,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         detail="无效的认证凭据",
         headers={"WWW-Authenticate": "Bearer"},
     )
-
+    """在准备认证流程，先拿 token、连数据库、准备好认证失败时返回的 401 错误。返回的是查询到的用户信息"""
     # 检查token是否在黑名单中
     blacklist_token = await db.token_blacklist.find_one({"token": token})
     if blacklist_token:

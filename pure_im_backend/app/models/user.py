@@ -15,6 +15,7 @@ class User(BaseModel):
     avatar: Optional[str] = None
     verification_code: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now())
+    last_offline_time: Optional[datetime] = None  # 上次离线时间，用于查询离线消息
     department_id: Optional[str] = None
     friends: List[str] = Field(default_factory=list)
     friend_requests: List[dict] = Field(default_factory=list)

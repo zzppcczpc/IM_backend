@@ -15,6 +15,57 @@ from ..schemas.response import error, success
 router = APIRouter()
 
 
+async def _get_offline_messages(
+    manage_db,
+    chat_db,
+    user_id: str,
+    last_offline_time,
+    group_ids: list
+) -> list:
+    """
+    查询用户离线消息
+    Args:
+        manage_db: 管理数据库
+        chat_db: 聊天数据库
+        user_id: 用户ID
+        last_offline_time: 上次离线时间（可能为空）
+        group_ids: 用户所在的群组ID列表
+    Returns:
+        离线消息列表，按群组分组
+    """
+    offline_messages = []
+
+    for group_id in group_ids:
+        chat_collection = getattr(chat_db, group_id)
+
+        # 构建查询条件
+        query = {
+            "sender_id": {"$ne": user_id},  # 排除自己的消息
+            "is_revoke": False,  # 排除已撤回消息
+        }
+
+        # 如果有离线时间，只查询离线时间之后的消息
+        if last_offline_time:
+            query["created_at"] = {"$gt": last_offline_time}
+
+        # 查询消息，按时间排序
+        messages = await chat_collection.find(query).sort("created_at", 1).to_list(None)
+
+        if messages:
+            offline_messages.append({
+                "group_id": group_id,
+                "messages": to_client_data(messages)
+            })
+
+    return offline_messages
+
+'''这个函数是把 MongoDB 查出来的数据转换成前端能接收的 JSON 数据。
+主要做几件事：
+如果是列表，就逐个转换
+如果是字典，就逐个字段转换，并去掉 MongoDB 的 _id
+如果是 datetime，转成字符串时间
+如果是 ObjectId，转成字符串
+其他普通值直接返回'''
 def to_client_data(value: Any):
     if isinstance(value, list):
         return [to_client_data(item) for item in value]
@@ -209,8 +260,15 @@ async def message_push_worker():
 # ==================== WebSocket端点 ====================
 
 @router.websocket("/ws/{token}")
+# token 是登录凭证，前端登录成功后拿到 access_token，然后连接 WebSocket 时把它拼进 URL：
+#     /ws/{token}
+#     FastAPI 会自动把 URL 里的 {token} 提取出来，传给函数参数：token: str
+#     后端再用这个 token 解析用户身份，判断当前 WebSocket 连接是谁的。
 async def websocket_endpoint(
     websocket: WebSocket,
+    #FastAPI 自动把当前这条 WebSocket 连接对象传进来。
+#     用户打开前端后建立连接： ws://127.0.0.1:8000/api/chat/ws/{token}
+# 后端就会进入这个函数（ websocket_endpoint）：
     token: str,
     manage_db=Depends(get_database),
     chat_db=Depends(get_chat_database),
@@ -223,11 +281,11 @@ async def websocket_endpoint(
 
     try:
         # 验证用户
-        user = await get_current_user(token)
+        user = await get_current_user(token)  # 这是根据 token 判断：当前登录的是谁。
         user_data = await manage_db.users.find_one({
             "id": user.id,
             "is_active": True,
-        })
+        })# 返回的是当前用户对象。
 
         if not user_data:
             await websocket.close(code=4001, reason="用户不存在")
@@ -235,6 +293,7 @@ async def websocket_endpoint(
 
         # 连接WebSocket
         await connection_manager.connect(user, websocket, send_ack=False)
+        # send_ack 是“是否发送连接确认消息“
 
         # ===== 关键改进：查询用户所属的所有群组 =====
         user_groups = await manage_db.groups.find({
@@ -244,28 +303,37 @@ async def websocket_endpoint(
 
         group_ids = [g["id"] for g in user_groups]
 
-        # 订阅所有群组
         await user_group_manager.subscribe_groups(user.id, group_ids)
+#         这个用户当前订阅了哪些群。主要用于判断用户能不能发/收某个群的消息。
         await connection_manager.register_user_groups(user.id, group_ids)
-
+#连接管理器里，这个用户和哪些群有关， 主要用于广播、在线用户、按群推送消息。
+      
         # 发送连接成功消息（包含用户所有群组信息）
         groups_info = []
         for g in user_groups:
             # 获取每个群的未读数
             chat_collection = getattr(chat_db, g["id"])
+            # getattr 是 Python 里“按名字取对象属性”的函数。从 chat_db 里取名字等于 group_id 的 collection。
             unread = await chat_collection.count_documents({
                 "group_id": g["id"],
                 "is_revoke": False,
                 "read_list": {"$ne": user.id},
             })
+
+            '''这段是把当前群的基本信息、未读数和最后一条消息整理进 `groups_info`，等下统一发给前端显示群列表。'''
             groups_info.append({
                 "group_id": g["id"],
                 "name": g["name"],
                 "type": g.get("type", "group"),
+                '''g 是一个群的数据字典
+                    g.get("type", "group") 表示取 g["type"]
+                    如果 g 里没有 type 字段，就默认用 "group"'''
                 "unread_count": unread,
                 "last_message": g.get("last_message"),
             })
 
+        '''在 WebSocket 连接成功后，主动发一条 connected 消息给前端，
+        告诉前端当前用户是谁、有几个设备在线、有哪些群组、总未读数是多少。'''
         await websocket.send_json({
             "type": "connected",
             "content": {
@@ -291,6 +359,16 @@ async def websocket_endpoint(
                     "group_id": group_id,
                     "content": to_client_data(recent),
                 })
+
+        # ===== 发送离线消息 =====
+        offline_messages = await _get_offline_messages(
+            manage_db, chat_db, user.id, user_data.get("last_offline_time"), group_ids
+        )
+        if offline_messages:
+            await websocket.send_json({
+                "type": "offline_messages",
+                "content": offline_messages
+            })
 
         # ===== 消息处理循环 =====
         handler = MessageHandler()

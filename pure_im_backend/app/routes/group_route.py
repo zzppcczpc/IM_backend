@@ -579,7 +579,9 @@ async def get_group_messages(
                 .to_list(None)
             )
 
-        messages.reverse()
+        # 修改：删除原来的 messages.reverse()。
+        # 原因：上面 MongoDB 已经按 created_at 升序查询，反转后会变成新消息在上、旧消息在下，
+        # 前端刷新历史或重新登录时就会看到消息顺序混乱。
 
         for message in messages:
             message["is_read"] = current_user.id in message.get("read_list", [])
