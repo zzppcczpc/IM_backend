@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +24,7 @@ class Message(BaseModel):
     sound_file_id: Optional[str] = None  # 语音文件ID
     revoke_at: Optional[datetime] = None  # 新增：撤回时间
     deleted_at: Optional[datetime] = None  # 新增：删除时间
+    deleted_by_users: List[str] = Field(default_factory=list)  # 删除该消息的用户ID列表（用户级软删除）
 
     class Config:
         populate_by_name = True

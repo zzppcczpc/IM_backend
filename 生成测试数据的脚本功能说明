@@ -1,35 +1,33 @@
 生成测试数据的脚本功能说明
-文件位置：IM_backend/pure_im_backend/scripts/generate_test_data.py
+文件位置
+IM_backend/pure_im_backend/scripts/generate_test_data.py
 
 功能概述
 一键生成MongoDB测试数据，包括用户、好友关系、群组、聊天消息。
 
-使用方法：
-1、# 进入后端目录
+# 进入后端目录
 cd c:\Users\zlf\Desktop\IM\IM_backend\pure_im_backend
 
-2、# 清空并生成新数据（30用户，250条消息）
+# #####清空并生成新数据（30用户，250条消息）#########
 D:\Miniconda\envs\learn\python.exe scripts\generate_test_data.py --clean
-————————————————————————————————记得刷新一下MongoDB的数据库
+————————————————————————
 生成的数据：
-	30个测试用户（密码统一 123456）  |用户名：测试用户_<姓氏>， 邮箱格式：test_<拼音>@example.com
+	30个测试用户（密码统一 123456）
 	5个群组（全员大群、产品研发组、技术交流群、项目小分队、休闲茶话会）
 	好友关系（每人5-15个好友）
 	250条聊天消息（文本、语音、文件、@提及）
-
-或者
-# 自定义数量（50用户，500条消息）
+# ######自定义数量######
 D:\Miniconda\envs\learn\python.exe scripts\generate_test_data.py --clean --users 50 --messages 500
+-----------------------------------------------------------------
+测试用户_李: test_lisi@example.com
+  测试用户_赵: test_zhaoliu@example.com
+  测试用户_陈: test_chenqi@example.com
+  ... 还有 45 个用户
 
+使用以下命令登录测试:
+  邮箱: test_zhangsan@example.com
+  密码: 123456
 # 查看帮助
 D:\Miniconda\envs\learn\python.exe scripts\generate_test_data.py --help
 
-
-测试账号（密码统一为 123456）:
-  测试用户_张: test_zhangsan@example.com
-  测试用户_王: test_wangwu@example.com
-  测试用户_李: test_lisi@example.com
-  测试用户_赵: test_zhaoliu@example.com
-  测试用户_陈: test_chenqi@example.com
-  ... 还有 25 个用户
 

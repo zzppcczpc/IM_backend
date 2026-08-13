@@ -42,6 +42,7 @@ async def _get_offline_messages(
         query = {
             "sender_id": {"$ne": user_id},  # 排除自己的消息
             "is_revoke": False,  # 排除已撤回消息
+            "deleted_by_users": {"$ne": user_id},  # 排除当前用户已删除的消息
         }
 
         # 如果有离线时间，只查询离线时间之后的消息
@@ -61,24 +62,26 @@ async def _get_offline_messages(
 
 '''这个函数是把 MongoDB 查出来的数据转换成前端能接收的 JSON 数据。
 主要做几件事：
-如果是列表，就逐个转换
-如果是字典，就逐个字段转换，并去掉 MongoDB 的 _id
-如果是 datetime，转成字符串时间
-如果是 ObjectId，转成字符串
-其他普通值直接返回'''
+    如果是列表，就逐个转换
+    如果是字典，就逐个字段转换，并去掉 MongoDB 的 _id
+    如果是 datetime，转成字符串时间
+    如果是 ObjectId，转成字符串
+    其他普通值直接返回'''
 def to_client_data(value: Any):
+#     isinstance 是 Python 用来判断"某个值是不是某种类型"的函数。
+# 比如：isinstance(value, list)，意思是：判断 value 是不是列表。
     if isinstance(value, list):
         return [to_client_data(item) for item in value]
     if isinstance(value, dict):
         return {
             key: to_client_data(item)
             for key, item in value.items()
-            if key != "_id"
+            if key != "_id"     # 这句是排除 _id
         }
     if isinstance(value, datetime):
         return value.isoformat()
     if value.__class__.__name__ == "ObjectId":
-        return str(value)
+        return str(value)  # ObjectId 是 MongoDB 自动生成的 _id 类型，前端不能直接识别，所以要转成字符串
     return value
 
 
@@ -98,6 +101,10 @@ class MessageHandler:
         duration: float = None,
         sound_file_id: str = None,
     ) -> Message:
+        '''at_list：@了哪些人
+            duration：语音时长
+            sound_file_id：语音文件 ID'''
+        
         """创建并保存消息"""
         user = await manage_db.users.find_one({"id": sender_id})
         if not user:
@@ -106,6 +113,8 @@ class MessageHandler:
         group_collection = getattr(chat_db, group_id)
         if isinstance(content, (dict, list)):
             content = json.dumps(content, ensure_ascii=False)
+            '''如果消息内容是字典或列表，就把它转成 JSON 字符串再存数据库。
+                ensure_ascii=False 是为了中文不被转成乱码形式，能正常保存中文。'''
 
         message = Message(
             type=msg_type,
@@ -293,7 +302,7 @@ async def websocket_endpoint(
 
         # 连接WebSocket
         await connection_manager.connect(user, websocket, send_ack=False)
-        # send_ack 是“是否发送连接确认消息“
+        # send_ack 是"是否发送连接确认消息"
 
         # ===== 关键改进：查询用户所属的所有群组 =====
         user_groups = await manage_db.groups.find({
@@ -304,30 +313,26 @@ async def websocket_endpoint(
         group_ids = [g["id"] for g in user_groups]
 
         await user_group_manager.subscribe_groups(user.id, group_ids)
-#         这个用户当前订阅了哪些群。主要用于判断用户能不能发/收某个群的消息。
+  #subscribe_groups    这个用户当前订阅了哪些群。主要用于判断用户能不能发/收某个群的消息。
         await connection_manager.register_user_groups(user.id, group_ids)
-#连接管理器里，这个用户和哪些群有关， 主要用于广播、在线用户、按群推送消息。
+        #register_user_groups连接管理器里，这个用户和哪些群有关， 主要用于广播、在线用户、按群推送消息。
       
         # 发送连接成功消息（包含用户所有群组信息）
         groups_info = []
         for g in user_groups:
             # 获取每个群的未读数
             chat_collection = getattr(chat_db, g["id"])
-            # getattr 是 Python 里“按名字取对象属性”的函数。从 chat_db 里取名字等于 group_id 的 collection。
+            # getattr 是 Python 里"按名字取对象属性"的函数。从 chat_db 里取名字等于 group_id 的 collection。
             unread = await chat_collection.count_documents({
-                "group_id": g["id"],
                 "is_revoke": False,
                 "read_list": {"$ne": user.id},
+                "deleted_by_users": {"$ne": user.id},  # 排除已删除消息
             })
 
-            '''这段是把当前群的基本信息、未读数和最后一条消息整理进 `groups_info`，等下统一发给前端显示群列表。'''
             groups_info.append({
                 "group_id": g["id"],
                 "name": g["name"],
                 "type": g.get("type", "group"),
-                '''g 是一个群的数据字典
-                    g.get("type", "group") 表示取 g["type"]
-                    如果 g 里没有 type 字段，就默认用 "group"'''
                 "unread_count": unread,
                 "last_message": g.get("last_message"),
             })
@@ -345,12 +350,14 @@ async def websocket_endpoint(
             }
         })
 
-        # ===== 为每个群组发送最近消息 =====
+        # ===== 为每个群组发送最近消息（仅10条）=====
         for group_id in group_ids:
             chat_collection = getattr(chat_db, group_id)
+            # 查询最近10条消息
             recent = await chat_collection.find({
                 "is_revoke": False,
-            }).sort("created_at", -1).limit(5).to_list(None)
+                "deleted_by_users": {"$ne": user.id},  # 排除当前用户已删除的消息
+            }).sort("created_at", -1).limit(10).to_list(None)
             recent.reverse()
 
             if recent:
@@ -492,29 +499,101 @@ async def websocket_endpoint(
                                 "content": {"message_id": message_id}
                             })
 
-                # 获取某个群的历史消息
+                # 删除消息（软删除，仅影响当前用户视角）
+                elif data.get("type") == "delete_message":
+                    group_id = data.get("group_id")
+                    message_id = data.get("message_id")
+
+                    if not group_id or not message_id:
+                        await websocket.send_json({
+                            "type": "error",
+                            "content": {"message": "缺少group_id或message_id"}
+                        })
+                        continue
+
+                    # 权限检查：用户必须在群组中
+                    if group_id not in user_group_manager.get_user_groups(user.id):
+                        await websocket.send_json({
+                            "type": "error",
+                            "content": {"message": "你不在该群组中"}
+                        })
+                        continue
+
+                    group_collection = getattr(chat_db, group_id)
+
+                    # 检查消息是否存在且未撤回
+                    msg = await group_collection.find_one({"id": message_id, "is_revoke": False})
+                    if not msg:
+                        await websocket.send_json({
+                            "type": "error",
+                            "content": {"message": "消息不存在或已撤回"}
+                        })
+                        continue
+
+                    # 将当前用户ID添加到 deleted_by_users 数组
+                    await group_collection.update_one(
+                        {"id": message_id},
+                        {"$addToSet": {"deleted_by_users": user.id}, "$set": {"deleted_at": datetime.now()}}
+                    )
+
+                    # 返回删除成功响应
+                    await websocket.send_json({
+                        "type": "message_deleted",
+                        "group_id": group_id,
+                        "content": {
+                            "message_id": message_id,
+                            "deleted": True
+                        }
+                    })
+
+                # 获取某个群的历史消息（分页加载）
                 elif data.get("type") == "get_history":
                     group_id = data.get("group_id")
                     limit = data.get("limit", 20)
                     before_id = data.get("before_id")
+                    # 后端查" before_id"这条消息之前的历史消息。
 
                     if group_id in user_group_manager.get_user_groups(user.id):
                         chat_collection = getattr(chat_db, group_id)
 
-                        query = {"is_revoke": False}
+                        query = {
+                            "is_revoke": False,
+                            "deleted_by_users": {"$ne": user.id}  # 排除当前用户已删除的消息
+                        }
                         if before_id:
                             before_msg = await chat_collection.find_one({"id": before_id})
+                            # 因为前端传来的 before_id 可能无效或查不到，所以要先确认 before_msg 存在，才能安全拿它的 created_at 去查更早消息。
                             if before_msg:
                                 query["created_at"] = {"$lt": before_msg["created_at"]}
+                                # 给查询条件 query 增加一个时间限制
 
-                        messages = await chat_collection.find(query).sort("created_at", -1).limit(limit).to_list(None)
+                        # ===== 分页逻辑：多查一条判断是否还有更多 =====
+                        # 查询 limit + 1 条，用于判断是否还有更早的消息
+                        messages = await chat_collection.find(query).sort("created_at", -1).limit(limit + 1).to_list(None)
+                        # 倒序是为了先拿到"离 before_id 最近的几条历史消息"。后面前端展示还得倒回来
+
+                        # 判断是否有更多消息
+                        has_more = len(messages) > limit
+                        if has_more:
+                            # 截取前 limit 条
+                            messages = messages[:limit]
+
+                        # 按时间升序排列（旧消息在前，新消息在后）
                         messages.reverse()
+
+                        # next_cursor 取当前批次最早消息的 ID（列表第一条）
+                        next_cursor = messages[0]["id"] if messages else None
 
                         await websocket.send_json({
                             "type": "history",
                             "group_id": group_id,
-                            "content": to_client_data(messages)
+                            "items": to_client_data(messages),
+                            "has_more": has_more,
+                            "next_cursor": next_cursor,
+                            "before_id": before_id  # 返回请求中的 before_id，前端据此判断是首次加载还是加载更多
                         })
+                        '''before_msg：这次根据 before_id 查出来的那条消息对象
+                            next_cursor：后端返回给前端的"下次从哪里继续加载"的标记'''
 
                 # 获取所有群组的在线用户
                 elif data.get("type") == "get_online_users":
@@ -573,6 +652,7 @@ async def websocket_endpoint(
                         unread = await chat_collection.count_documents({
                             "is_revoke": False,
                             "read_list": {"$ne": user.id},
+                            "deleted_by_users": {"$ne": user.id},  # 排除已删除消息
                         })
                         groups_info.append({
                             "group_id": g["id"],

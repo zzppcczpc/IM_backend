@@ -21,6 +21,7 @@ class MessageData(BaseModel):
     duration: Optional[float] = None
     revoke_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
+    deleted_by_users: List[str] = Field(default_factory=list)  # 删除该消息的用户ID列表
 
 
 class MessageResponse(BaseModel):
@@ -41,6 +42,7 @@ class MessageResponse(BaseModel):
     revoke_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
     is_read: bool = False
+    deleted_by_users: List[str] = Field(default_factory=list)  # 删除该消息的用户ID列表
 
 
 class StopMessage(BaseModel):

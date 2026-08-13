@@ -322,11 +322,33 @@ async def generate_messages(
     """生成聊天消息"""
     db = await get_chat_database()
 
+    # ===== 修复：按群组ID清理消息，而不是使用统一的 messages collection =====
+    # 原因：消息按群组ID存储在各自的 collection 中，不存在 messages collection
     if clean:
-        result = await db.messages.delete_many({
-            "sender_id": {"$regex": r"^test-user-"}
-        })
-        print(f"已删除 {result.deleted_count} 条测试消息")
+        main_db = await get_database()
+        groups = await main_db.groups.find({
+            "id": {"$regex": r"^test-group-"}
+        }).to_list(length=100)
+
+        deleted_count = 0
+        for group in groups:
+            collection = getattr(db, group["id"])
+            result = await collection.delete_many({
+                "sender_id": {"$regex": r"^test-user-"}
+            })
+            deleted_count += result.deleted_count
+
+        # 清理私聊消息（私聊 collection 名格式: private-{id1}-{id2}）
+        user_ids = [u["id"] for u in users]
+        for i, uid1 in enumerate(user_ids):
+            for uid2 in user_ids[i+1:]:
+                private_collection_name = f"private-{min(uid1, uid2)}-{max(uid1, uid2)}"
+                collection = getattr(db, private_collection_name, None)
+                if collection is not None:
+                    result = await collection.delete_many({})
+                    deleted_count += result.deleted_count
+
+        print(f"已删除 {deleted_count} 条测试消息")
 
     # 获取所有群组
     main_db = await get_database()
@@ -405,8 +427,22 @@ async def generate_messages(
         stats["private"] += 1
         stats[msg_type] += 1
 
+    # ===== 修复：按群组ID分组存储消息到各自的 collection =====
+    # 原因：项目设计为每个群组一个 collection，collection 名为 group_id
+    # 参见 chat.py 第106行: chat_collection = getattr(chat_db, group_id)
     if messages:
-        await db.messages.insert_many(messages)
+        # 按 group_id 分组
+        messages_by_group: Dict[str, List[Dict]] = {}
+        for msg in messages:
+            group_id = msg["group_id"]
+            if group_id not in messages_by_group:
+                messages_by_group[group_id] = []
+            messages_by_group[group_id].append(msg)
+
+        # 分别存储到各自的 collection
+        for group_id, group_messages in messages_by_group.items():
+            collection = getattr(db, group_id)
+            await collection.insert_many(group_messages)
 
     return stats
 
