@@ -65,12 +65,6 @@ def create_routes():
 create_routes()
 
 
-@app.on_event("startup")
-async def init_test_data_on_startup():
-    from .utils.init_data import ensure_test_data
-
-    await ensure_test_data()
-
 # 静态文件
 if os.path.exists("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")

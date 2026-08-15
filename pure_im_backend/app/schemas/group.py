@@ -22,6 +22,9 @@ class GroupResponse(BaseModel):
     type: str = "group"
     unread_count: int = 0
     was_at: bool = False
+    # 新增：用户维度的置顶设置
+    is_pinned: bool = False  # 是否置顶
+    pinned_at: Optional[datetime] = None  # 置顶时间
 
 
 class GroupCreateResponse(BaseModel):
@@ -61,6 +64,10 @@ class GroupMemberManage(BaseModel):
     user_ids: List[str]
 
 
+#    search_data: GroupMessageSearch 就是一个 请求参数的数据容器，它：
+#     接收前端传来的查询参数（群组ID、分页、起始时间）
+#       自动验证参数类型和必填字段
+#       简化后端代码，让逻辑更清晰
 class GroupMessageSearch(BaseModel):
     id: str
     page: int = 1
@@ -91,3 +98,17 @@ class MessageSearch(BaseModel):
     message_content: str
     page: int = 1
     page_size: int = 20
+
+
+# 新增：置顶设置请求模型
+class PinSetting(BaseModel):
+    """置顶设置请求"""
+    is_pinned: bool  # True=置顶, False=取消置顶
+
+
+# 新增：置顶设置响应模型
+class PinResponse(BaseModel):
+    """置顶设置响应"""
+    group_id: str
+    is_pinned: bool
+    pinned_at: Optional[datetime] = None  # 取消置顶时为 None

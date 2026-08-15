@@ -221,10 +221,15 @@ async def send_friend_request(
             {"$push": {"friend_requests": to_request.model_dump()}}
         )
 
-        await connection_dic.broadcast(
+        # 调试日志：检查好友请求通知发送
+        logger.info(f"发送好友请求: 发送者={current_user.username}({current_user.id}), 接收者={friend['username']}({friend_id})")
+        logger.info(f"接收者在线状态: {connection_dic.is_user_online(friend_id)}")
+
+        sent_to = await connection_dic.broadcast(
             [friend_id],
             json.dumps({"type": "refresh_friend_request_count"})
         )
+        logger.info(f"好友请求通知已发送给: {sent_to}")
 
         return success(message="好友请求已发送")
     except Exception as e:

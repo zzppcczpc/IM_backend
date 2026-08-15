@@ -20,8 +20,6 @@ class Settings(BaseSettings):
     DEFAULT_GROUP_NAME: str = "我的消息"
     CORS_ALLOW_ORIGINS: list[str] = ["*"]
     CORS_ALLOW_CREDENTIALS: bool = False
-    INIT_TEST_USERS: bool = True
-    TEST_USER_PASSWORD: str = "123456"
 
     SMTP_SERVER: str = ""
     SMTP_PORT: int = 465

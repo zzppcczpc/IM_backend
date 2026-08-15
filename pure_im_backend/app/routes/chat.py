@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from ..database import get_chat_database, get_database
 from ..models.user import User
 from ..models.message import Message
+from ..models.user_cleared_group import UserClearedGroup  # 用户清空会话消息模型
 from ..utils.auth import get_current_user
 from ..utils.websocket_manager import connection_manager
 from ..utils.log import logger
@@ -34,21 +35,38 @@ async def _get_offline_messages(
     Returns:
         离线消息列表，按群组分组
     """
+    from app.utils.message_query import build_message_query
+
     offline_messages = []
 
     for group_id in group_ids:
         chat_collection = getattr(chat_db, group_id)
 
-        # 构建查询条件
-        query = {
-            "sender_id": {"$ne": user_id},  # 排除自己的消息
-            "is_revoke": False,  # 排除已撤回消息
-            "deleted_by_users": {"$ne": user_id},  # 排除当前用户已删除的消息
-        }
+        # 使用公共函数构建基础查询条件
+        query = await build_message_query(
+            user_id=user_id,
+            group_id=group_id,
+            manage_db=manage_db,
+        )
+        query["sender_id"] = {"$ne": user_id}  # 离线消息排除自己的消息
 
-        # 如果有离线时间，只查询离线时间之后的消息
+        # 离线时间过滤：如果有离线时间，需要调整时间过滤
         if last_offline_time:
-            query["created_at"] = {"$gt": last_offline_time}
+            # 查询用户对该群组的清空记录，取较晚的时间点
+            clear_record = await manage_db.user_cleared_groups.find_one({
+                "user_id": user_id,
+                "group_id": group_id,
+            })
+
+            # 确定最终的时间过滤条件
+            if clear_record:
+                clear_time = clear_record["cleared_at"]
+                # 取清空时间和离线时间中较晚的那个
+                effective_time = max(clear_time, last_offline_time)
+            else:
+                effective_time = last_offline_time
+
+            query["created_at"] = {"$gt": effective_time}
 
         # 查询消息，按时间排序
         messages = await chat_collection.find(query).sort("created_at", 1).to_list(None)
@@ -322,13 +340,14 @@ async def websocket_endpoint(
         groups_info = []
         for g in user_groups:
             # 获取每个群的未读数
+            from app.utils.message_query import count_unread_messages
             chat_collection = getattr(chat_db, g["id"])
-            # getattr 是 Python 里"按名字取对象属性"的函数。从 chat_db 里取名字等于 group_id 的 collection。
-            unread = await chat_collection.count_documents({
-                "is_revoke": False,
-                "read_list": {"$ne": user.id},
-                "deleted_by_users": {"$ne": user.id},  # 排除已删除消息
-            })
+            unread = await count_unread_messages(
+                user_id=user.id,
+                group_id=g["id"],
+                chat_collection=chat_collection,
+                manage_db=manage_db,
+            )
 
             groups_info.append({
                 "group_id": g["id"],
@@ -354,11 +373,17 @@ async def websocket_endpoint(
         # ===== 为每个群组发送最近消息（仅10条）=====
         for group_id in group_ids:
             chat_collection = getattr(chat_db, group_id)
+
+            # 使用公共函数构建查询条件，统一过滤逻辑
+            from app.utils.message_query import build_message_query
+            query = await build_message_query(
+                user_id=user.id,
+                group_id=group_id,
+                manage_db=manage_db,
+            )
+
             # 查询最近10条消息
-            recent = await chat_collection.find({
-                "is_revoke": False,
-                "deleted_by_users": {"$ne": user.id},  # 排除当前用户已删除的消息
-            }).sort("created_at", -1).limit(10).to_list(None)
+            recent = await chat_collection.find(query).sort("created_at", -1).limit(10).to_list(None)
             recent.reverse()
 
             if recent:
@@ -565,21 +590,25 @@ async def websocket_endpoint(
                     group_id = data.get("group_id")
                     limit = data.get("limit", 20)
                     before_id = data.get("before_id")
-                    # 后端查" before_id"这条消息之前的历史消息。
 
                     if group_id in user_group_manager.get_user_groups(user.id):
                         chat_collection = getattr(chat_db, group_id)
 
-                        query = {
-                            "is_revoke": False,
-                            "deleted_by_users": {"$ne": user.id}  # 排除当前用户已删除的消息
-                        }
+                        # 获取分页锚点时间
+                        before_time = None
                         if before_id:
                             before_msg = await chat_collection.find_one({"id": before_id})
-                            # 因为前端传来的 before_id 可能无效或查不到，所以要先确认 before_msg 存在，才能安全拿它的 created_at 去查更早消息。
                             if before_msg:
-                                query["created_at"] = {"$lt": before_msg["created_at"]}
-                                # 给查询条件 query 增加一个时间限制
+                                before_time = before_msg["created_at"]
+
+                        # 使用公共函数构建查询条件，统一过滤逻辑
+                        from app.utils.message_query import build_message_query
+                        query = await build_message_query(
+                            user_id=user.id,
+                            group_id=group_id,
+                            manage_db=manage_db,
+                            before_time=before_time,
+                        )
 
                         # ===== 分页逻辑：多查一条判断是否还有更多 =====
                         # 查询 limit + 1 条，用于判断是否还有更早的消息
@@ -663,11 +692,15 @@ async def websocket_endpoint(
                     groups_info = []
                     for g in user_groups:
                         chat_collection = getattr(chat_db, g["id"])
-                        unread = await chat_collection.count_documents({
-                            "is_revoke": False,
-                            "read_list": {"$ne": user.id},
-                            "deleted_by_users": {"$ne": user.id},  # 排除已删除消息
-                        })
+
+                        # 使用公共函数统计未读数
+                        from app.utils.message_query import count_unread_messages
+                        unread = await count_unread_messages(
+                            user_id=user.id,
+                            group_id=g["id"],
+                            chat_collection=chat_collection,
+                            manage_db=manage_db,
+                        )
                         groups_info.append({
                             "group_id": g["id"],
                             "name": g["name"],

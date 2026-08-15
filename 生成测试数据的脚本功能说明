@@ -5,7 +5,7 @@ IM_backend/pure_im_backend/scripts/generate_test_data.py
 功能概述
 一键生成MongoDB测试数据，包括用户、好友关系、群组、聊天消息。
 
-# 进入后端目录
+### 进入后端目录########## 
 cd c:\Users\zlf\Desktop\IM\IM_backend\pure_im_backend
 
 # #####清空并生成新数据（30用户，250条消息）#########
