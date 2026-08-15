@@ -667,16 +667,53 @@ async def websocket_endpoint(
                                 "content": {"message": "你不在该群组中"}
                             })
                             continue
+
+                        # 检查群组类型
+                        group = await manage_db.groups.find_one({"id": group_id})
+                        is_private = group and group.get("type") == "private"
+
                         chat_collection = getattr(chat_db, group_id)
+
+                        # 更新已读列表
                         await chat_collection.update_many(
                             {"id": {"$in": message_ids}},
                             {"$addToSet": {"read_list": user.id}}
                         )
+
+                        # 发送已读确认给操作者
                         await websocket.send_json({
                             "type": "read_marked",
                             "group_id": group_id,
                             "content": {"message_ids": message_ids}
                         })
+
+                        # 私聊已读通知：通知消息发送者"对方已读"
+                        if is_private:
+                            # 查询这些消息，找出发送者（排除自己）
+                            messages = await chat_collection.find(
+                                {"id": {"$in": message_ids}}
+                            ).to_list(None)
+
+                            sender_ids = set()
+                            for msg in messages:
+                                sender_id = msg.get("sender_id")
+                                if sender_id and sender_id != user.id:
+                                    sender_ids.add(sender_id)
+
+                            # 通知每个发送者
+                            for sender_id in sender_ids:
+                                await connection_manager.send_to_user(
+                                    sender_id,
+                                    {
+                                        "type": "message_read",
+                                        "group_id": group_id,
+                                        "content": {
+                                            "message_ids": message_ids,
+                                            "reader_id": user.id,
+                                            "reader_name": user.username,
+                                        }
+                                    }
+                                )
 
                 # 刷新群组列表（比如新建群后）
                 elif data.get("type") == "refresh_groups":
