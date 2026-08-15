@@ -1,7 +1,8 @@
 import asyncio
 import json
 from typing import Any
-from datetime import datetime
+from datetime import datetime, timedelta
+# timedelta 是 Python 标准库 datetime 模块中的时间差对象，用于表示两个时间点之间的差值。
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from ..database import get_chat_database, get_database
@@ -472,10 +473,19 @@ async def websocket_endpoint(
                             continue
 
                         group_collection = getattr(chat_db, group_id)
-
+                        # getattr 的作用是：根据 group_id 动态找到这个群对应的消息集合。
                         # 检查权限
                         msg = await group_collection.find_one({"id": message_id})
                         if msg and msg["sender_id"] == user.id:
+                            # 撤回时间限制：只能撤回2分钟内发送的消息
+                            time_diff = datetime.now() - msg["created_at"]
+                            if time_diff > timedelta(minutes=2):
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "content": {"message": "消息超过两分钟，不可撤回"}
+                                })
+                                continue
+
                             await group_collection.update_one(
                                 {"id": message_id},
                                 {"$set": {"is_revoke": True, "revoke_at": datetime.now()}}
@@ -489,7 +499,11 @@ async def websocket_endpoint(
                                     group["member_ids"],
                                     {
                                         "type": "message_revoke",
-                                        "group_id": group_id,
+                                        '''表示后端广播给前端的消息类型是“消息已撤回”。
+                                            前端收到这个类型后，就会找到对应消息，把它标记成：
+                                            is_revoke: true
+                                            然后页面显示“已撤回”。'''
+                                                        "group_id": group_id,
                                         "content": {"message_id": message_id, "sender_id": user.id}
                                     }
                                 )
