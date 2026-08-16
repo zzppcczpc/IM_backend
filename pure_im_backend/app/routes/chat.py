@@ -655,6 +655,33 @@ async def websocket_endpoint(
                             "content": online
                         })
 
+                # 输入中状态
+                elif data.get("type") == "typing":
+                    group_id = data.get("group_id")
+                    is_typing = data.get("is_typing", True)
+
+                    if group_id and group_id in user_group_manager.get_user_groups(user.id):
+                        # 检查群组类型，只处理私聊
+                        group = await manage_db.groups.find_one({"id": group_id})
+                        if group and group.get("type") == "private":
+                            # 获取其他成员（排除自己）
+                            other_member_ids = [mid for mid in group.get("member_ids", []) if mid != user.id]
+
+                            if other_member_ids:
+                                await connection_manager.broadcast_to_group(
+                                    group_id,
+                                    other_member_ids,
+                                    {
+                                        "type": "typing",
+                                        "group_id": group_id,
+                                        "content": {
+                                            "user_id": user.id,
+                                            "username": user.username,
+                                            "is_typing": is_typing,
+                                        }
+                                    }
+                                )
+
                 # 标记已读
                 elif data.get("type") == "mark_read":
                     group_id = data.get("group_id")
