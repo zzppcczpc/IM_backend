@@ -12,6 +12,7 @@ from ..schemas.response import error, success
 from ..utils.auth import get_current_user
 from ..utils.log import logger
 from ..utils.file_handler import save_file, validate_file
+from ..utils.group_mute import can_send_group_message
 
 router = APIRouter()
 
@@ -58,6 +59,11 @@ async def group_upload_media(
             return error(code=403, message="无权限访问该群聊")
 
         # 保存文件名安全处理
+        # 上传文件也会生成一条群消息，所以这里同样要检查禁言。
+        can_send, reason = can_send_group_message(group, current_user.id)
+        if not can_send:
+            return error(code=403, message=reason)
+
         safe_filename = "".join(
             c for c in file.filename if c.isalnum() or c in "._- "
         )
@@ -127,6 +133,11 @@ async def upload_file_to_group(
 
         if current_user.id not in group["member_ids"]:
             return error(code=403, message="无权限访问该群聊")
+
+        # 上传文件也会生成一条群消息，所以这里同样要检查禁言。
+        can_send, reason = can_send_group_message(group, current_user.id)
+        if not can_send:
+            return error(code=403, message=reason)
 
         safe_filename = "".join(
             c for c in file.filename if c.isalnum() or c in "._- "

@@ -10,6 +10,7 @@ from ..models.user import User
 from ..models.message import Message
 from ..models.user_cleared_group import UserClearedGroup  # 用户清空会话消息模型
 from ..utils.auth import get_current_user
+from ..utils.group_mute import can_send_group_message
 from ..utils.websocket_manager import connection_manager
 from ..utils.log import logger
 from ..schemas.response import error, success
@@ -458,6 +459,15 @@ async def websocket_endpoint(
                         continue
 
                     # 创建并广播消息
+                    # 群禁言在真正创建消息前拦截：不写数据库，也不广播给其他成员。
+                    can_send, reason = can_send_group_message(group, user.id, datetime.now())
+                    if not can_send:
+                        await websocket.send_json({
+                            "type": "error",
+                            "content": {"message": reason}
+                        })
+                        continue
+
                     message_type = data.get("msg_type")
                     if not message_type:
                         message_type = "text" if data.get("type") == "send_message" else data.get("type", "text")

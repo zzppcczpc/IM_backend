@@ -1,5 +1,6 @@
-import json
-from datetime import datetime
+﻿import json
+import uuid
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -11,23 +12,35 @@ from ..models.user_pinned_group import UserPinnedGroup  # 用户置顶群组模�
 from ..models.user_cleared_group import UserClearedGroup  # 用户清空会话消息模型
 from ..schemas.group import (
     ForwardMessage,
+    GroupAnnouncementCreate,
+    GroupAnnouncementResponse,
+    GroupAnnouncementUpdate,
+    GroupAdminUpdateResponse,
     GroupCreate,
     GroupCreateResponse,
     GroupDetailResponse,
     GroupInquiry,
+    GroupMembersWithRoleResponse,
     GroupMemberManage,
+    GroupMemberRoleResponse,
     GroupMessageSearch,
     GroupReadUpdate,
     GroupForwardMessage,
     GroupResponse,
     MessageSearch,
+    MuteAllRequest,
+    MuteAllResponse,
+    MuteMemberRequest,
+    MuteMemberResponse,
     PinSetting,  # 置顶设置请求模型
     PinResponse,  # 置顶设置响应模型
+    UnmuteMemberResponse,
 )
 from ..schemas.message import MessageData, MessageResponse
 from ..schemas.response import PaginationModel, error, success
 from ..schemas.user import UserResponse
 from ..utils.auth import get_current_user
+from ..utils.group_mute import can_mute_member
 from ..utils.log import logger
 from ..utils.websocket_manager import connection_dic
 
@@ -49,6 +62,150 @@ def to_client_data(value):
     if value.__class__.__name__ == "ObjectId":
         return str(value)
     return value
+
+
+def can_manage_announcement(group: dict, user_id: str) -> bool:
+    """判断用户能不能管理公告：群主可以，预留的公告管理员也可以。"""
+    return (
+        group.get("owner_id") == user_id
+        or user_id in group.get("admin_ids", [])
+        or user_id in group.get("announcement_editor_ids", [])
+    )
+
+
+def get_member_role(group: dict, user_id: str) -> str:
+    """Return owner/admin/member for one user in this group."""
+    if user_id == group.get("owner_id"):
+        return "owner"
+    if user_id in group.get("admin_ids", []):
+        return "admin"
+    return "member"
+
+
+def is_group_admin_or_owner(group: dict, user_id: str) -> bool:
+    """Group managers are the owner plus users in admin_ids."""
+    return (
+        user_id == group.get("owner_id")
+        or user_id in group.get("admin_ids", [])
+    )
+
+
+def can_manage_member(group: dict, operator_id: str, target_id: str) -> bool:
+    """Owner can manage admins/members; admin can only manage normal members."""
+    operator_role = get_member_role(group, operator_id)
+    target_role = get_member_role(group, target_id)
+
+    if target_role == "owner":
+        return False
+    if operator_role == "owner":
+        return True
+    if operator_role == "admin" and target_role == "member":
+        return True
+    return False
+
+
+async def build_group_member_roles(db, group: dict, current_user: User) -> list:
+    """Build member list with role labels for API and frontend display."""
+    members = []
+    for member_id in group.get("member_ids", []):
+        user = await db.users.find_one({"id": member_id, "is_active": True})
+        if not user:
+            continue
+        members.append({
+            "user_id": user["id"],
+            "id": user["id"],
+            "username": user["username"],
+            "avatar": user.get("avatar"),
+            "role": get_member_role(group, member_id),
+            "is_friend": member_id in current_user.friends,
+        })
+    return members
+
+
+async def enrich_announcement(db, group_id: str, announcement: dict) -> dict:
+    """把数据库里的公告补全成前端好展示的格式。
+
+    MongoDB 里只存 created_by/updated_by 的用户 ID；页面需要显示用户名，
+    所以这里统一查 users 表补 created_by_username/updated_by_username。
+    """
+    created_by = announcement.get("created_by")
+    updated_by = announcement.get("updated_by")
+    user_ids = {user_id for user_id in [created_by, updated_by] if user_id}
+    users = {}
+    if user_ids:
+        user_list = await db.users.find({"id": {"$in": list(user_ids)}}).to_list(None)
+        users = {user["id"]: user for user in user_list}
+
+    return {
+        "id": announcement.get("id", ""),
+        "group_id": group_id,
+        "content": announcement.get("content", ""),
+        "created_by": created_by or "",
+        "created_by_username": users.get(created_by, {}).get("username"),
+        "created_at": announcement.get("created_at"),
+        "updated_by": updated_by or "",
+        "updated_by_username": users.get(updated_by, {}).get("username"),
+        "updated_at": announcement.get("updated_at"),
+    }
+
+
+async def enrich_announcements(db, group_id: str, announcements: list) -> list:
+    """补全公告列表，并按更新时间倒序排列，让最新公告排在最上面。"""
+    enriched = [
+        await enrich_announcement(db, group_id, announcement)
+        for announcement in announcements
+    ]
+    return sorted(
+        enriched,
+        key=lambda item: item.get("updated_at") or item.get("created_at") or datetime.min,
+        reverse=True,
+    )
+
+
+async def broadcast_announcement_change(group: dict, payload: dict):
+    """公告有变化时通知群内在线成员。
+
+    前端只需要监听 group_announcement_updated，然后根据 action 更新本地列表。
+    """
+    await connection_dic.broadcast_to_group(
+        group["id"],
+        group.get("member_ids", []),
+        {
+            "type": "group_announcement_updated",
+            "group_id": group["id"],
+            "content": payload,
+        },
+    )
+
+
+async def broadcast_member_role_change(group: dict, user_id: str, role: str, operator_id: str):
+    """Notify online group members that one member's role changed."""
+    await connection_dic.broadcast_to_group(
+        group["id"],
+        group.get("member_ids", []),
+        {
+            "type": "group_member_role_updated",
+            "group_id": group["id"],
+            "content": {
+                "user_id": user_id,
+                "role": role,
+                "operator_id": operator_id,
+            },
+        },
+    )
+
+
+async def broadcast_group_mute_change(group: dict, event_type: str, payload: dict):
+    """Notify online group members that mute state changed."""
+    await connection_dic.broadcast_to_group(
+        group["id"],
+        group.get("member_ids", []),
+        {
+            "type": event_type,
+            "group_id": group["id"],
+            "content": payload,
+        },
+    )
 
 
 @router.post("/create", description="创建群聊")
@@ -158,8 +315,8 @@ async def add_member_to_group(
         if not group:
             return error(code=404, message="群组不存在")
 
-        if group["owner_id"] != current_user.id:
-            return error(code=403, message="非群主不能添加用户")
+        if not is_group_admin_or_owner(group, current_user.id):
+            return error(code=403, message="只有群主或管理员可以添加用户")
 
         for user_id in post_data.user_ids:
             user = await db.users.find_one({"id": user_id, "is_active": True})
@@ -200,15 +357,16 @@ async def del_member_from_group(
         if not group:
             return error(code=404, message="群组不存在")
 
-        if group["owner_id"] != current_user.id:
-            return error(code=403, message="非群主不能移出用户")
-
-        if current_user.id in post_data.user_ids:
-            return error(code=403, message="不能移出群主")
+        for user_id in post_data.user_ids:
+            if not can_manage_member(group, current_user.id, user_id):
+                return error(code=403, message="无权移出该成员")
 
         await db.groups.update_one(
             {"id": post_data.group_id},
-            {"$pull": {"member_ids": {"$in": post_data.user_ids}}},
+            {"$pull": {
+                "member_ids": {"$in": post_data.user_ids},
+                "admin_ids": {"$in": post_data.user_ids},
+            }},
         )
 
         return success(message="移除成功")
@@ -240,7 +398,10 @@ async def leave_group(
 
         await db.groups.update_one(
             {"id": group_id},
-            {"$pull": {"member_ids": current_user.id}},
+            {"$pull": {
+                "member_ids": current_user.id,
+                "admin_ids": current_user.id,
+            }},
         )
 
         # 新增：如果是私聊，退出后只剩一个人，直接解散该私聊群
@@ -529,6 +690,495 @@ async def read_message(
         return error(code=500, message="标记已读出错")
 
 
+@router.get("/{group_id}/members", description="获取带角色的群成员列表")
+async def get_group_members(
+    group_id: str,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    try:
+        group = await db.groups.find_one({
+            "id": group_id,
+            "is_dissolved": False,
+        })
+        if not group:
+            return error(code=404, message="群组不存在或已解散")
+        if current_user.id not in group.get("member_ids", []):
+            return error(code=403, message="你不在该群组中")
+
+        members = await build_group_member_roles(db, group, current_user)
+        return success(data=GroupMembersWithRoleResponse(
+            group_id=group_id,
+            members=[GroupMemberRoleResponse(**member) for member in members],
+        ).model_dump())
+    except Exception as e:
+        logger.error(f"获取群成员角色列表出错: {e}")
+        return error(code=500, message="获取群成员角色列表失败")
+
+
+@router.post("/{group_id}/admins/{user_id}", description="设置群管理员")
+async def set_group_admin(
+    group_id: str,
+    user_id: str,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    try:
+        group = await db.groups.find_one({
+            "id": group_id,
+            "is_dissolved": False,
+        })
+        if not group:
+            return error(code=404, message="群组不存在或已解散")
+        if current_user.id != group.get("owner_id"):
+            return error(code=403, message="只有群主可以设置管理员")
+        if user_id == group.get("owner_id"):
+            return error(code=400, message="群主不能设置为管理员")
+        if user_id not in group.get("member_ids", []):
+            return error(code=400, message="只能设置群成员为管理员")
+
+        await db.groups.update_one(
+            {"id": group_id},
+            {"$addToSet": {"admin_ids": user_id}},
+        )
+        await broadcast_member_role_change(group, user_id, "admin", current_user.id)
+
+        return success(
+            message="管理员已设置",
+            data=GroupAdminUpdateResponse(
+                group_id=group_id,
+                user_id=user_id,
+                role="admin",
+            ).model_dump(),
+        )
+    except Exception as e:
+        logger.error(f"设置群管理员出错: {e}")
+        return error(code=500, message="设置群管理员失败")
+
+
+@router.delete("/{group_id}/admins/{user_id}", description="取消群管理员")
+async def unset_group_admin(
+    group_id: str,
+    user_id: str,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    try:
+        group = await db.groups.find_one({
+            "id": group_id,
+            "is_dissolved": False,
+        })
+        if not group:
+            return error(code=404, message="群组不存在或已解散")
+        if current_user.id != group.get("owner_id"):
+            return error(code=403, message="只有群主可以取消管理员")
+        if user_id == group.get("owner_id"):
+            return error(code=400, message="群主不能取消管理员")
+        if user_id not in group.get("member_ids", []):
+            return error(code=400, message="该用户不在群组中")
+
+        await db.groups.update_one(
+            {"id": group_id},
+            {"$pull": {"admin_ids": user_id}},
+        )
+        await broadcast_member_role_change(group, user_id, "member", current_user.id)
+
+        return success(
+            message="管理员已取消",
+            data=GroupAdminUpdateResponse(
+                group_id=group_id,
+                user_id=user_id,
+                role="member",
+            ).model_dump(),
+        )
+    except Exception as e:
+        logger.error(f"取消群管理员出错: {e}")
+        return error(code=500, message="取消群管理员失败")
+
+
+@router.post("/{group_id}/mute/{user_id}", description="禁言群成员")
+async def mute_group_member(
+    group_id: str,
+    user_id: str,
+    mute_data: MuteMemberRequest,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    try:
+        # 1. 先确认群存在、操作者在群里、目标也是群成员。
+        group = await db.groups.find_one({"id": group_id, "is_dissolved": False})
+        if not group:
+            return error(code=404, message="群组不存在或已解散")
+        if current_user.id not in group.get("member_ids", []):
+            return error(code=403, message="你不在该群组中")
+        if user_id not in group.get("member_ids", []):
+            return error(code=400, message="只能禁言群成员")
+        if group.get("type") == "private":
+            return error(code=400, message="私聊不支持禁言")
+
+        # 2. 权限规则：群主能禁言管理员/成员；管理员只能禁言普通成员；群主不能被禁言。
+        if not can_mute_member(group, current_user.id, user_id):
+            return error(code=403, message="没有权限禁言该成员")
+
+        now = datetime.now()
+        muted_until = now + timedelta(minutes=mute_data.minutes)
+        mute_record = {
+            "user_id": user_id,
+            "muted_by": current_user.id,
+            "muted_at": now,
+            "muted_until": muted_until,
+        }
+
+        # 3. 先删除旧记录再写入新记录，保证一个成员最多只有一条当前禁言配置。
+        await db.groups.update_one(
+            {"id": group_id},
+            {"$pull": {"muted_members": {"user_id": user_id}}},
+        )
+        await db.groups.update_one(
+            {"id": group_id},
+            {"$push": {"muted_members": mute_record}},
+        )
+
+        response_data = MuteMemberResponse(
+            group_id=group_id,
+            user_id=user_id,
+            muted_by=current_user.id,
+            muted_at=now,
+            muted_until=muted_until,
+        ).model_dump()
+        await broadcast_group_mute_change(group, "group_member_muted", to_client_data(response_data))
+        return success(message="成员已禁言", data=response_data)
+    except Exception as e:
+        logger.error(f"禁言群成员出错: {e}")
+        return error(code=500, message="禁言群成员失败")
+
+
+@router.delete("/{group_id}/mute/{user_id}", description="解除群成员禁言")
+async def unmute_group_member(
+    group_id: str,
+    user_id: str,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    try:
+        group = await db.groups.find_one({"id": group_id, "is_dissolved": False})
+        if not group:
+            return error(code=404, message="群组不存在或已解散")
+        if current_user.id not in group.get("member_ids", []):
+            return error(code=403, message="你不在该群组中")
+        if user_id not in group.get("member_ids", []):
+            return error(code=400, message="该用户不在群组中")
+        if group.get("type") == "private":
+            return error(code=400, message="私聊不支持禁言")
+        if not can_mute_member(group, current_user.id, user_id):
+            return error(code=403, message="没有权限解除该成员禁言")
+
+        await db.groups.update_one(
+            {"id": group_id},
+            {"$pull": {"muted_members": {"user_id": user_id}}},
+        )
+
+        response_data = UnmuteMemberResponse(group_id=group_id, user_id=user_id).model_dump()
+        await broadcast_group_mute_change(group, "group_member_unmuted", response_data)
+        return success(message="成员禁言已解除", data=response_data)
+    except Exception as e:
+        logger.error(f"解除群成员禁言出错: {e}")
+        return error(code=500, message="解除群成员禁言失败")
+
+
+@router.post("/{group_id}/mute-all", description="开启全员禁言")
+async def mute_all_group_members(
+    group_id: str,
+    mute_data: MuteAllRequest,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    try:
+        group = await db.groups.find_one({"id": group_id, "is_dissolved": False})
+        if not group:
+            return error(code=404, message="群组不存在或已解散")
+        if current_user.id not in group.get("member_ids", []):
+            return error(code=403, message="你不在该群组中")
+        if group.get("type") == "private":
+            return error(code=400, message="私聊不支持禁言")
+        if not is_group_admin_or_owner(group, current_user.id):
+            return error(code=403, message="只有群主或管理员可以开启全员禁言")
+
+        now = datetime.now()
+        muted_until = now + timedelta(minutes=mute_data.minutes)
+        await db.groups.update_one(
+            {"id": group_id},
+            {"$set": {
+                "all_muted_until": muted_until,
+                "all_muted_by": current_user.id,
+                "all_muted_at": now,
+            }},
+        )
+
+        response_data = MuteAllResponse(
+            group_id=group_id,
+            muted_by=current_user.id,
+            muted_at=now,
+            muted_until=muted_until,
+        ).model_dump()
+        await broadcast_group_mute_change(group, "group_all_muted", to_client_data(response_data))
+        return success(message="全员禁言已开启", data=response_data)
+    except Exception as e:
+        logger.error(f"开启全员禁言出错: {e}")
+        return error(code=500, message="开启全员禁言失败")
+
+
+@router.delete("/{group_id}/mute-all", description="关闭全员禁言")
+async def unmute_all_group_members(
+    group_id: str,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    try:
+        group = await db.groups.find_one({"id": group_id, "is_dissolved": False})
+        if not group:
+            return error(code=404, message="群组不存在或已解散")
+        if current_user.id not in group.get("member_ids", []):
+            return error(code=403, message="你不在该群组中")
+        if group.get("type") == "private":
+            return error(code=400, message="私聊不支持禁言")
+        if not is_group_admin_or_owner(group, current_user.id):
+            return error(code=403, message="只有群主或管理员可以关闭全员禁言")
+
+        await db.groups.update_one(
+            {"id": group_id},
+            {"$set": {
+                "all_muted_until": None,
+                "all_muted_by": None,
+                "all_muted_at": None,
+            }},
+        )
+
+        response_data = {"group_id": group_id}
+        await broadcast_group_mute_change(group, "group_all_unmuted", response_data)
+        return success(message="全员禁言已关闭", data=response_data)
+    except Exception as e:
+        logger.error(f"关闭全员禁言出错: {e}")
+        return error(code=500, message="关闭全员禁言失败")
+
+@router.get("/{group_id}/announcements", description="获取群公告列表")
+async def get_group_announcements(
+    group_id: str,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    try:
+        # 1. 先确认群存在且没解散。
+        group = await db.groups.find_one({
+            "id": group_id,
+            "is_dissolved": False,
+        })
+        if not group:
+            return error(code=404, message="群组不存在或已解散")
+        # 2. 公告是群内资料，只有群成员能看。
+        if current_user.id not in group.get("member_ids", []):
+            return error(code=403, message="你不在该群组中")
+        # 3. 私聊没有“群公告”这个概念，直接拒绝。
+        if group.get("type") == "private":
+            return error(code=400, message="私聊不支持群公告")
+
+        # 4. 数据库里公告只存用户 ID，返回前补上用户名并排序。
+        announcements = await enrich_announcements(
+            db,
+            group_id,
+            group.get("announcements", []),
+        )
+        return success(
+            message="获取成功",
+            data=[
+                GroupAnnouncementResponse(**item).model_dump()
+                for item in announcements
+            ],
+        )
+    except Exception as e:
+        logger.error(f"获取群公告列表出错: {e}")
+        return error(code=500, message="获取群公告列表失败")
+
+
+@router.post("/{group_id}/announcements", description="发布群公告")
+async def create_group_announcement(
+    group_id: str,
+    announcement_data: GroupAnnouncementCreate,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    try:
+        # 1. 群存在、用户在群里、并且不是私聊，才继续处理。
+        group = await db.groups.find_one({
+            "id": group_id,
+            "is_dissolved": False,
+        })
+        if not group:
+            return error(code=404, message="群组不存在或已解散")
+        if current_user.id not in group.get("member_ids", []):
+            return error(code=403, message="你不在该群组中")
+        if group.get("type") == "private":
+            return error(code=400, message="私聊不支持群公告")
+        # 2. 只有群主或公告管理员能发布公告。
+        if not can_manage_announcement(group, current_user.id):
+            return error(code=403, message="只有群主可以发布群公告")
+
+        # 3. 去掉首尾空格，避免保存“全是空格”的公告。
+        content = announcement_data.content.strip()
+        if not content:
+            return error(code=400, message="群公告内容不能为空")
+
+        # 4. 后端生成公告 ID、创建人和时间，避免相信前端传来的身份信息。
+        now = datetime.now()
+        announcement = {
+            "id": str(uuid.uuid4()),
+            "content": content,
+            "created_by": current_user.id,
+            "created_at": now,
+            "updated_by": current_user.id,
+            "updated_at": now,
+        }
+        await db.groups.update_one(
+            {"id": group_id},
+            {"$push": {"announcements": {"$each": [announcement], "$position": 0}}},
+        )
+
+        # 5. 返回前补用户名；同时广播给在线群成员，让他们的公告栏实时刷新。
+        response_data = GroupAnnouncementResponse(
+            **await enrich_announcement(db, group_id, announcement)
+        ).model_dump()
+        await broadcast_announcement_change(group, {
+            "action": "created",
+            "announcement": to_client_data(response_data),
+        })
+
+        return success(message="群公告已发布", data=response_data)
+    except Exception as e:
+        logger.error(f"发布群公告出错: {e}")
+        return error(code=500, message="发布群公告失败")
+
+
+@router.put("/{group_id}/announcements/{announcement_id}", description="修改群公告")
+async def update_group_announcement(
+    group_id: str,
+    announcement_id: str,
+    announcement_data: GroupAnnouncementUpdate,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    try:
+        # 1. 修改公告同样先走群、成员、私聊、权限四个校验。
+        group = await db.groups.find_one({
+            "id": group_id,
+            "is_dissolved": False,
+        })
+        if not group:
+            return error(code=404, message="群组不存在或已解散")
+        if current_user.id not in group.get("member_ids", []):
+            return error(code=403, message="你不在该群组中")
+        if group.get("type") == "private":
+            return error(code=400, message="私聊不支持群公告")
+        if not can_manage_announcement(group, current_user.id):
+            return error(code=403, message="只有群主可以修改群公告")
+
+        # 2. 在群文档的 announcements 数组里找到要修改的公告。
+        target = next(
+            (item for item in group.get("announcements", []) if item.get("id") == announcement_id),
+            None,
+        )
+        if not target:
+            return error(code=404, message="群公告不存在")
+
+        # 3. 空内容不允许保存，避免公告列表出现空白卡片。
+        content = announcement_data.content.strip()
+        if not content:
+            return error(code=400, message="群公告内容不能为空")
+
+        # 4. 使用 MongoDB 的 $ 定位符，只更新数组里匹配到的那一条公告。
+        now = datetime.now()
+        result = await db.groups.update_one(
+            {"id": group_id, "announcements.id": announcement_id},
+            {"$set": {
+                "announcements.$.content": content,
+                "announcements.$.updated_by": current_user.id,
+                "announcements.$.updated_at": now,
+            }},
+        )
+        if result.modified_count == 0:
+            return error(code=404, message="群公告不存在")
+
+        # 5. 拼出更新后的公告对象，用于 HTTP 返回和 WebSocket 广播。
+        updated_announcement = {
+            **target,
+            "content": content,
+            "updated_by": current_user.id,
+            "updated_at": now,
+        }
+        response_data = GroupAnnouncementResponse(
+            **await enrich_announcement(db, group_id, updated_announcement)
+        ).model_dump()
+        await broadcast_announcement_change(group, {
+            "action": "updated",
+            "announcement": to_client_data(response_data),
+        })
+
+        return success(message="群公告已更新", data=response_data)
+    except Exception as e:
+        logger.error(f"修改群公告出错: {e}")
+        return error(code=500, message="修改群公告失败")
+
+
+@router.delete("/{group_id}/announcements/{announcement_id}", description="删除群公告")
+async def delete_group_announcement(
+    group_id: str,
+    announcement_id: str,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    try:
+        # 1. 删除公告也必须先校验：群存在、用户是成员、不是私聊、有管理权限。
+        group = await db.groups.find_one({
+            "id": group_id,
+            "is_dissolved": False,
+        })
+        if not group:
+            return error(code=404, message="群组不存在或已解散")
+        if current_user.id not in group.get("member_ids", []):
+            return error(code=403, message="你不在该群组中")
+        if group.get("type") == "private":
+            return error(code=400, message="私聊不支持群公告")
+        if not can_manage_announcement(group, current_user.id):
+            return error(code=403, message="只有群主可以删除群公告")
+
+        # 2. 先确认公告确实存在，这样前端能收到明确的 404。
+        exists = any(
+            item.get("id") == announcement_id
+            for item in group.get("announcements", [])
+        )
+        if not exists:
+            return error(code=404, message="群公告不存在")
+
+        # 3. 从群文档的 announcements 数组中移除目标公告。
+        await db.groups.update_one(
+            {"id": group_id},
+            {"$pull": {"announcements": {"id": announcement_id}}},
+        )
+        response_data = {
+            "group_id": group_id,
+            "announcement_id": announcement_id,
+        }
+        # 4. 广播 deleted，让在线成员从本地公告列表里删掉同一条。
+        await broadcast_announcement_change(group, {
+            "action": "deleted",
+            "announcement_id": announcement_id,
+        })
+
+        return success(message="群公告已删除", data=response_data)
+    except Exception as e:
+        logger.error(f"删除群公告出错: {e}")
+        return error(code=500, message="删除群公告失败")
+
+
 @router.get("/{group_uuid}", description="查询群详情")
 async def get_group_by_uuid(
     group_uuid: str,
@@ -552,29 +1202,36 @@ async def get_group_by_uuid(
             user_id=current_user.id,
             group_id=group_uuid,
             chat_collection=chat_collection,
-            manage_db=manage_db,
+            manage_db=db,
         )
 
-        # 获取成员信息
-        members = []
-        for member_id in group["member_ids"]:
-            if group.get("type") == "private":
+        # 获取成员信息。群聊额外带 role，前端可以直接显示群主/管理员/成员。
+        if group.get("type") == "private":
+            members = []
+            for member_id in group["member_ids"]:
                 if member_id == current_user.id:
                     continue
                 user = await db.users.find_one({"id": member_id})
                 if user:
                     members.append(UserResponse(**user).model_dump())
                     group["name"] = user["username"]
-            else:
-                user = await db.users.find_one(
-                    {"id": member_id, "is_active": True}
-                )
-                if user:
-                    user["is_friend"] = member_id in current_user.friends
-                    members.append(UserResponse(**user).model_dump())
+        else:
+            members = await build_group_member_roles(db, group, current_user)
 
         group["members"] = members
         group["total_unread"] = total_unread
+        group["admin_ids"] = group.get("admin_ids", [])
+        # 群详情也顺带带上公告列表；前端打开群后即使不额外请求，也有基础公告数据。
+        group["announcements"] = await enrich_announcements(
+            db,
+            group_uuid,
+            group.get("announcements", []),
+        )
+        group["announcement_editor_ids"] = group.get("announcement_editor_ids", [])
+        group["muted_members"] = group.get("muted_members", [])
+        group["all_muted_until"] = group.get("all_muted_until")
+        group["all_muted_by"] = group.get("all_muted_by")
+        group["all_muted_at"] = group.get("all_muted_at")
 
         return success(data=GroupDetailResponse(**to_client_data(group)).model_dump())
     except Exception as e:
@@ -1041,3 +1698,5 @@ async def clear_group_messages(
     except Exception as e:
         logger.error(f"清空会话消息出错: {e}")
         return error(code=500, message="清空会话消息出错")
+
+

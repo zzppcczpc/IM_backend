@@ -15,6 +15,23 @@ class Group(BaseModel):
     organization_id: Optional[str] = None
     member_ids: List[str] = Field(default_factory=list)
     type: str = "group"  # group 或 private
+    # Admins are a subset of member_ids. owner_id is still the only owner.
+    admin_ids: List[str] = Field(default_factory=list)
+
+    # 群公告直接嵌在群文档里：一个群对应一个公告列表，适合当前“公告数量不大”的场景。
+    # 每条公告是 dict：id/content/created_by/created_at/updated_by/updated_at。
+    announcements: List[dict] = Field(default_factory=list)
+
+    # 预留扩展字段：以后如果要让群管理员也能发公告，把用户 ID 放到这里即可。
+    # 当前页面主要还是用 owner_id 判断群主权限。
+    announcement_editor_ids: List[str] = Field(default_factory=list)
+
+    # 单人禁言列表：每条记录存 user_id、muted_by、muted_at、muted_until。
+    # 全员禁言只需要存截止时间；为空或已过期就表示没有开启。
+    muted_members: List[dict] = Field(default_factory=list)
+    all_muted_until: Optional[datetime] = None
+    all_muted_by: Optional[str] = None
+    all_muted_at: Optional[datetime] = None
 
     class Config:
         populate_by_name = True
