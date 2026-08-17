@@ -13,6 +13,7 @@ from ..utils.auth import get_current_user
 from ..utils.group_mute import can_send_group_message
 from ..utils.websocket_manager import connection_manager
 from ..utils.log import logger
+from ..utils.message_query import build_message_query
 from ..schemas.response import error, success
 
 router = APIRouter()
@@ -822,3 +823,95 @@ async def get_stats():
 async def get_online(group_id: str, current_user: User = Depends(get_current_user)):
     """获取群组在线用户"""
     return success(data=connection_manager.get_online_users(group_id))
+
+
+@router.get("/search", description="搜索会话内消息")
+async def search_messages(
+    group_id: str,
+    keyword: str,
+    page: int = 1,
+    page_size: int = 20,
+    current_user: User = Depends(get_current_user),
+    manage_db=Depends(get_database),
+    chat_db=Depends(get_chat_database),
+):
+    """
+    在指定会话内搜索消息
+
+    Args:
+        group_id: 群组/私聊ID
+        keyword: 搜索关键词
+        page: 页码，默认1
+        page_size: 每页条数，默认20，最大100
+
+    Returns:
+        搜索结果列表，包含消息详情和分页信息
+    """
+    # 1. 参数校验
+    keyword = keyword.strip()
+    if not keyword:
+        return error(code=400, message="关键词不能为空")
+    if len(keyword) < 2:
+        return error(code=400, message="关键词至少需要2个字符")
+
+    # 限制每页最大条数
+    page_size = min(page_size, 100)
+    page = max(page, 1)
+
+    # 2. 权限校验
+    group = await manage_db.groups.find_one({
+        "id": group_id,
+        "is_dissolved": False,
+    })
+    if not group:
+        return error(code=404, message="群组不存在")
+
+    if current_user.id not in group.get("member_ids", []):
+        return error(code=403, message="无权限访问该会话")
+
+    # 3. 构建查询条件
+    chat_collection = getattr(chat_db, group_id)
+
+    # 使用公共函数构建基础查询条件（过滤已撤回、已删除消息）
+    query = await build_message_query(
+        user_id=current_user.id,
+        group_id=group_id,
+        manage_db=manage_db,
+    )
+
+    # 添加关键词匹配条件（只搜索文本消息）
+    query["content"] = {"$regex": keyword, "$options": "i"}
+    query["type"] = "text"
+
+    # 4. 分页查询
+    skip = (page - 1) * page_size
+    total = await chat_collection.count_documents(query)
+
+    messages = await chat_collection.find(query) \
+        .sort("created_at", -1) \
+        .skip(skip) \
+        .limit(page_size) \
+        .to_list(None)
+
+    # 5. 构建响应
+    items = []
+    for msg in messages:
+        items.append({
+            "id": msg["id"],
+            "content": msg["content"],
+            "type": msg["type"],
+            "sender_id": msg["sender_id"],
+            "sender_username": msg.get("sender_username", ""),
+            "sender_avatar": msg.get("sender_avatar"),
+            "created_at": msg["created_at"].isoformat(),
+        })
+
+    return success(data={
+        "group_id": group_id,
+        "keyword": keyword,
+        "items": items,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "has_more": skip + len(items) < total,
+    })

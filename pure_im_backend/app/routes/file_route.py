@@ -13,25 +13,9 @@ from ..utils.auth import get_current_user
 from ..utils.log import logger
 from ..utils.file_handler import save_file, validate_file
 from ..utils.group_mute import can_send_group_message
+from ..utils.file_permission import check_file_download_permission
 
 router = APIRouter()
-
-
-async def can_access_file(file_record: dict, current_user: User, db) -> bool:
-    """文件拥有者或所属群成员可以下载。"""
-    if file_record.get("owner_id") == current_user.id:
-        return True
-
-    group_id = file_record.get("group_id")
-    if not group_id:
-        return False
-
-    group = await db.groups.find_one({
-        "id": group_id,
-        "is_dissolved": False,
-        "member_ids": current_user.id,
-    })
-    return group is not None
 
 
 @router.post("/group/upload/media", description="群上传多媒体")
@@ -241,8 +225,10 @@ async def download_file_route(
         if not file_record:
             return error(code=404, message="文件不存在")
 
-        if not await can_access_file(file_record, current_user, db):
-            return error(code=403, message="无权限下载该文件")
+        # 使用新的权限校验函数
+        permission = await check_file_download_permission(file_record, current_user, db)
+        if not permission.can_access:
+            return error(code=permission.error_code, message=permission.error_message)
 
         if not os.path.exists(file_record["local_file_path"]):
             return error(code=404, message="文件不存在")
