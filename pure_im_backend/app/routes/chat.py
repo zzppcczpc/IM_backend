@@ -137,6 +137,10 @@ class MessageHandler:
             '''如果消息内容是字典或列表，就把它转成 JSON 字符串再存数据库。
                 ensure_ascii=False 是为了中文不被转成乱码形式，能正常保存中文。'''
 
+        # 语音消息和文字消息共用 Message 模型：
+        # - 文字消息：type="text"，content 存文字本身。
+        # - 语音消息：type 类似 "audio/webm"，content 存文件 ID，duration 存语音秒数。
+        # 这样聊天列表只保存“消息记录”，真实语音文件由 files 表和 uploads 目录保存。
         message = Message(
             type=msg_type,
             content=content,
@@ -161,7 +165,9 @@ class MessageHandler:
                 }
 
         message_dict = message.model_dump()
+        # 每个群有自己的聊天集合，语音消息也会作为一条普通消息写进去。
         await group_collection.insert_one(message_dict)
+        # 更新群列表最后一条消息，让左侧会话列表能显示最新动态。
         await manage_db.groups.update_one(
             {"id": group_id},
             {"$set": {"last_message": message_dict}},
@@ -205,6 +211,7 @@ async def broadcast_and_save_msg(
 ):
     chat_db = await get_chat_database()
     handler = MessageHandler()
+    # 文件/语音上传后会调用这里：先把“文件 ID + 文件类型 + 时长”包装成一条聊天消息并入库。
     message = await handler.create_message(
         manage_db=manage_db,
         chat_db=chat_db,
@@ -224,6 +231,7 @@ async def broadcast_and_save_msg(
     if save_message:
         group = await manage_db.groups.find_one({"id": group_id})
         member_ids = broadcast_ids or (group.get("member_ids", []) if group else [])
+        # 再通过 WebSocket 推给群成员；前端收到 type=audio/webm 后就会渲染语音播放器。
         await connection_manager.broadcast_to_group(
             group_id,
             member_ids,

@@ -29,12 +29,15 @@ async def group_upload_media(
     chat_db=Depends(get_chat_database),
 ):
     try:
-        # 验证文件
+        # 1. 先验证文件后缀和大小，语音文件本质上也是一个上传文件。
         await validate_file(file, settings.ALLOWED_EXTENSIONS, settings.MAX_FILE_SIZE)
 
+        # 2. 给这次上传的文件生成一个唯一 ID。
+        # 语音消息不会把音频二进制直接存进消息表，而是在消息 content 里存这个文件 ID。
         doc_uuid = str(uuid.uuid4())
         group_collection = getattr(chat_db, group_id)
 
+        # 3. 校验群是否存在、当前用户是否在群里。
         group = await manage_db.groups.find_one({"id": group_id, "is_dissolved": False})
         if not group:
             return error(code=404, message="群组不存在")
@@ -42,16 +45,17 @@ async def group_upload_media(
         if current_user.id not in group["member_ids"]:
             return error(code=403, message="无权限访问该群聊")
 
-        # 保存文件名安全处理
-        # 上传文件也会生成一条群消息，所以这里同样要检查禁言。
+        # 4. 上传语音也等于发消息，所以这里同样要检查禁言，避免被禁言用户绕过输入框发语音。
         can_send, reason = can_send_group_message(group, current_user.id)
         if not can_send:
             return error(code=403, message=reason)
 
+        # 5. 清理文件名，避免文件名里有奇怪字符影响本地保存路径。
         safe_filename = "".join(
             c for c in file.filename if c.isalnum() or c in "._- "
         )
         file.filename = safe_filename
+        # 6. 读取真实音频二进制内容，后面 save_file 会把它写入 uploads 目录。
         content = await file.read()
 
         file_header = {
@@ -60,7 +64,8 @@ async def group_upload_media(
             "size": file.size,
         }
 
-        # 广播消息
+        # 7. 先创建并广播一条聊天消息。
+        # 如果是语音，消息 content 只存 doc_uuid；前端播放时再用 doc_uuid 下载真实音频文件。
         from ..routes.chat import broadcast_and_save_msg
         await broadcast_and_save_msg(
             group_collection=group_collection,
@@ -73,12 +78,12 @@ async def group_upload_media(
             type=file.content_type,
             group_id=group_id,
             sender_id=current_user.id,
+            # duration 是前端录音计出来的秒数，用于播放器显示语音长度。
             duration=duration,
         )
 
-        # 后台保存文件
-        background_tasks.add_task(
-            save_file,
+        # 8. 把真实音频文件保存到本地 uploads，并在 files 表里记录文件 ID、路径、类型等信息。
+        await save_file(
             content,
             current_user,
             doc_uuid,

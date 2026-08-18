@@ -13,7 +13,7 @@ class Settings(BaseSettings):
         ".png", ".jpg", ".jpeg", ".gif",
         ".pdf", ".doc", ".docx", ".xls", ".xlsx",
         ".txt", ".md", ".json", ".csv",
-        ".mp3", ".mp4", ".wav", ".ogg",
+        ".mp3", ".mp4", ".wav", ".ogg", ".webm",
     ]
 
     OPENAPI_DOCS: bool = True
