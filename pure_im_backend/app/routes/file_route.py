@@ -14,6 +14,7 @@ from ..utils.log import logger
 from ..utils.file_handler import save_file, validate_file
 from ..utils.group_mute import can_send_group_message
 from ..utils.file_permission import check_file_download_permission
+from ..utils.message_type import get_message_type
 
 router = APIRouter()
 
@@ -65,20 +66,31 @@ async def group_upload_media(
         }
 
         # 7. 先创建并广播一条聊天消息。
-        # 如果是语音，消息 content 只存 doc_uuid；前端播放时再用 doc_uuid 下载真实音频文件。
+        # 使用统一消息类型：image/audio/file
         from ..routes.chat import broadcast_and_save_msg
+        message_type = get_message_type(file_header["content_type"])
+
+        # 构造结构化 content
+        if message_type == "audio":
+            message_content = {
+                "file_id": doc_uuid,
+                "duration": duration,
+            }
+        else:
+            message_content = {
+                "file_id": doc_uuid,
+                "filename": file.filename,
+                "size": file.size,
+                "mime_type": file.content_type,
+            }
+
         await broadcast_and_save_msg(
             group_collection=group_collection,
             manage_db=manage_db,
-            content=(
-                doc_uuid
-                if file_header["content_type"].startswith("audio/")
-                else {"id": doc_uuid, "filename": file.filename}
-            ),
-            type=file.content_type,
+            content=message_content,
+            type=message_type,
             group_id=group_id,
             sender_id=current_user.id,
-            # duration 是前端录音计出来的秒数，用于播放器显示语音长度。
             duration=duration,
         )
 
@@ -144,11 +156,18 @@ async def upload_file_to_group(
 
         # 广播消息
         from ..routes.chat import broadcast_and_save_msg
+        message_type = get_message_type(file.content_type)
+
         await broadcast_and_save_msg(
             group_collection=group_collection,
             manage_db=manage_db,
-            content={"id": doc_uuid, "filename": file.filename},
-            type=file.content_type,
+            content={
+                "file_id": doc_uuid,
+                "filename": file.filename,
+                "size": file.size,
+                "mime_type": file.content_type,
+            },
+            type=message_type,
             group_id=group_id,
             sender_id=current_user.id,
         )
