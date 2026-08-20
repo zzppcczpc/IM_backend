@@ -8,16 +8,14 @@ from ..utils.log import logger
 
 
 async def validate_file(file: UploadFile, allowed_extensions: list, max_size: int):
-    """验证文件类型和大小"""
+    """验证文件类型（不限制大小）"""
     # 检查文件扩展名
     filename = file.filename.lower()
     ext = os.path.splitext(filename)[1]
     if ext not in allowed_extensions:
         raise ValueError(f"不支持的文件类型: {ext}")
 
-    # 检查文件大小
-    if file.size and file.size > max_size:
-        raise ValueError(f"文件大小超出限制: {max_size / 1024 / 1024}MB")
+    # 不限制文件大小，允许上传大文件
 
 
 async def save_file(

@@ -8,12 +8,17 @@ class Settings(BaseSettings):
     SECRET_ENCRYPTION_KEY: str = "your-32-byte-encryption-key-here"
     SECRET_IV: str = "your-16-byte-iv-here"
 
-    MAX_FILE_SIZE: int = 10 * 1024 * 1024
+    MAX_FILE_SIZE: int = 100 * 1024 * 1024  # 100MB
     ALLOWED_EXTENSIONS: list = [
-        ".png", ".jpg", ".jpeg", ".gif",
-        ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+        # 图片
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+        # 文档
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
         ".txt", ".md", ".json", ".csv",
-        ".mp3", ".mp4", ".wav", ".ogg", ".webm",
+        # 音频
+        ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a",
+        # 视频
+        ".mp4", ".webm", ".mov", ".avi", ".mkv",
     ]
 
     OPENAPI_DOCS: bool = True

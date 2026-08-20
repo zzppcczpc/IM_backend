@@ -66,17 +66,21 @@ async def group_upload_media(
         }
 
         # 7. 先创建并广播一条聊天消息。
-        # 使用统一消息类型：image/audio/file
+        # 使用统一消息类型：image/audio/video/file
         from ..routes.chat import broadcast_and_save_msg
         message_type = get_message_type(file_header["content_type"])
 
         # 构造结构化 content
-        if message_type == "audio":
+        # 语音录音：duration 有值，content 只存 file_id 和 duration
+        # 上传的音频/视频文件：content 存完整文件信息（filename, size, mime_type）
+        if message_type == "audio" and duration is not None:
+            # 语音录音消息
             message_content = {
                 "file_id": doc_uuid,
                 "duration": duration,
             }
         else:
+            # 上传的文件消息（图片/视频/音频文件/普通文件）
             message_content = {
                 "file_id": doc_uuid,
                 "filename": file.filename,
