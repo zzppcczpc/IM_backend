@@ -101,6 +101,21 @@ class GroupForwardMessage(BaseModel):
     message_ids: List[str]
 
 
+class ForwardToGroupRequest(BaseModel):
+    """转发消息到其他群的请求"""
+    source_group_id: str  # 源群组ID
+    target_group_id: str  # 目标群组ID
+    message_ids: List[str]  # 要转发的消息ID列表
+
+
+class ForwardToGroupResponse(BaseModel):
+    """转发消息到其他群的响应"""
+    source_group_id: str
+    target_group_id: str
+    forwarded_count: int
+    message_ids: List[str]
+
+
 class ForwardMessage(BaseModel):
     id: str
     group_id: str

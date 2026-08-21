@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 import random
 import string
 
@@ -20,6 +20,7 @@ from ..schemas.user import (
 )
 from ..utils.security import create_access_token, get_password_hash, verify_password
 from ..utils.log import logger
+from ..utils.rate_limit import check_rate_limit, record_rate_limit
 
 router = APIRouter()
 
@@ -32,9 +33,35 @@ async def confirm():
 @router.post("/register/send-email-code", description="发送邮箱验证码")
 async def send_verification_email_code(
     user_data: EmailContent,
+    request: Request,
     db=Depends(get_database),
 ):
     try:
+        # 获取客户端 IP
+        client_ip = request.client.host if request.client else "unknown"
+
+        # 频率限制1：同一邮箱60秒内最多发送1次
+        allowed, error_msg = await check_rate_limit(
+            db=db,
+            limit_type="email_code",
+            identifier=user_data.email,
+            max_requests=1,
+            window_seconds=60,
+        )
+        if not allowed:
+            return error(code=429, message=error_msg)
+
+        # 频率限制2：同一 IP 60秒内最多发送5次（防止单 IP 滥用）
+        allowed, error_msg = await check_rate_limit(
+            db=db,
+            limit_type="email_code_ip",
+            identifier=client_ip,
+            max_requests=5,
+            window_seconds=60,
+        )
+        if not allowed:
+            return error(code=429, message=error_msg)
+
         user = await db.users.find_one({"email": user_data.email, "is_active": True})
         if user:
             return error(code=409, message="邮箱已注册")
@@ -56,6 +83,20 @@ async def send_verification_email_code(
         # TODO: 实际发送邮件（需要配置SMTP）
         logger.info(f"验证码: {code} 已发送到 {user_data.email}")
 
+        # 记录频率限制（邮箱）
+        await record_rate_limit(
+            db=db,
+            limit_type="email_code",
+            identifier=user_data.email,
+        )
+
+        # 记录频率限制（IP）
+        await record_rate_limit(
+            db=db,
+            limit_type="email_code_ip",
+            identifier=client_ip,
+        )
+
         return success(message="验证码已发送")
     except Exception as e:
         logger.error(f"发送验证码出错: {e}")
@@ -65,9 +106,35 @@ async def send_verification_email_code(
 @router.post("/send-phone-code", description="发送手机验证码")
 async def send_verification_phone_code(
     user_data: PhoneContent,
+    request: Request,
     db=Depends(get_database),
 ):
     try:
+        # 获取客户端 IP
+        client_ip = request.client.host if request.client else "unknown"
+
+        # 频率限制1：同一手机号60秒内最多发送1次
+        allowed, error_msg = await check_rate_limit(
+            db=db,
+            limit_type="phone_code",
+            identifier=user_data.phone,
+            max_requests=1,
+            window_seconds=60,
+        )
+        if not allowed:
+            return error(code=429, message=error_msg)
+
+        # 频率限制2：同一 IP 60秒内最多发送5次
+        allowed, error_msg = await check_rate_limit(
+            db=db,
+            limit_type="phone_code_ip",
+            identifier=client_ip,
+            max_requests=5,
+            window_seconds=60,
+        )
+        if not allowed:
+            return error(code=429, message=error_msg)
+
         code = "".join(random.choices(string.digits, k=6))
 
         user = await db.users.find_one({"phone": user_data.phone, "is_active": True})
@@ -89,6 +156,20 @@ async def send_verification_phone_code(
 
         # TODO: 实际发送短信（需要配置短信服务）
         logger.info(f"验证码: {code} 已发送到 {user_data.phone}")
+
+        # 记录频率限制（手机号）
+        await record_rate_limit(
+            db=db,
+            limit_type="phone_code",
+            identifier=user_data.phone,
+        )
+
+        # 记录频率限制（IP）
+        await record_rate_limit(
+            db=db,
+            limit_type="phone_code_ip",
+            identifier=client_ip,
+        )
 
         return success(message="验证码已发送", data=UserSendCodeResponse(**user))
     except Exception as e:
@@ -257,9 +338,35 @@ async def login(user_data: UserEmailLogin, db=Depends(get_database)):
 @router.post("/password/send-code", description="发送密码重置验证码")
 async def send_password_reset_code(
     user_data: ResetPasswordSendCode,
+    request: Request,
     db=Depends(get_database),
 ):
     try:
+        # 获取客户端 IP
+        client_ip = request.client.host if request.client else "unknown"
+
+        # 频率限制1：同一邮箱60秒内最多发送1次
+        allowed, error_msg = await check_rate_limit(
+            db=db,
+            limit_type="password_reset",
+            identifier=user_data.email,
+            max_requests=1,
+            window_seconds=60,
+        )
+        if not allowed:
+            return error(code=429, message=error_msg)
+
+        # 频率限制2：同一 IP 60秒内最多发送5次
+        allowed, error_msg = await check_rate_limit(
+            db=db,
+            limit_type="password_reset_ip",
+            identifier=client_ip,
+            max_requests=5,
+            window_seconds=60,
+        )
+        if not allowed:
+            return error(code=429, message=error_msg)
+
         user = await db.users.find_one({"email": user_data.email, "is_active": True})
         if not user:
             return error(code=404, message="用户不存在")
@@ -276,6 +383,20 @@ async def send_password_reset_code(
 
         # TODO: 实际发送邮件
         logger.info(f"重置验证码: {code} 已发送到 {user_data.email}")
+
+        # 记录频率限制（邮箱）
+        await record_rate_limit(
+            db=db,
+            limit_type="password_reset",
+            identifier=user_data.email,
+        )
+
+        # 记录频率限制（IP）
+        await record_rate_limit(
+            db=db,
+            limit_type="password_reset_ip",
+            identifier=client_ip,
+        )
 
         return success(message="验证码已发送")
     except Exception as e:

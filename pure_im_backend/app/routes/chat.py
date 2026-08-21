@@ -822,14 +822,29 @@ async def websocket_endpoint(
 # ==================== HTTP接口 ====================
 
 @router.get("/stats")
-async def get_stats():
-    """连接统计"""
+async def get_stats(current_user: User = Depends(get_current_user)):
+    """连接统计（需登录）"""
     return success(data=connection_manager.get_stats())
 
 
 @router.get("/online/{group_id}")
-async def get_online(group_id: str, current_user: User = Depends(get_current_user)):
-    """获取群组在线用户"""
+async def get_online(
+    group_id: str,
+    current_user: User = Depends(get_current_user),
+    manage_db=Depends(get_database),
+):
+    """获取群组在线用户（需校验成员身份）"""
+    # 权限校验：检查群组是否存在且用户是否为群成员
+    group = await manage_db.groups.find_one({
+        "id": group_id,
+        "is_dissolved": False,
+    })
+    if not group:
+        return error(code=404, message="群组不存在或已解散")
+
+    if current_user.id not in group.get("member_ids", []):
+        return error(code=403, message="你不在该群组中")
+
     return success(data=connection_manager.get_online_users(group_id))
 
 

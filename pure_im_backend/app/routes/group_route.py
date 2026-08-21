@@ -12,6 +12,8 @@ from ..models.user_pinned_group import UserPinnedGroup  # 用户置顶群组模�
 from ..models.user_cleared_group import UserClearedGroup  # 用户清空会话消息模型
 from ..schemas.group import (
     ForwardMessage,
+    ForwardToGroupRequest,
+    ForwardToGroupResponse,
     GroupAnnouncementCreate,
     GroupAnnouncementResponse,
     GroupAnnouncementUpdate,
@@ -1382,14 +1384,39 @@ async def forward_messages(
     message_data: GroupForwardMessage,
     current_user: User = Depends(get_current_user),
     db=Depends(get_database),
+    chat_db=Depends(get_chat_database),
 ):
     try:
         if not message_data.message_ids:
             return error(code=400, message="请选择要转存的消息")
 
+        # 权限校验：检查源群组是否存在且用户是否为群成员
+        source_group = await db.groups.find_one({
+            "id": message_data.group_id,
+            "is_dissolved": False,
+        })
+        if not source_group:
+            return error(code=404, message="源群组不存在或已解散")
+
+        if current_user.id not in source_group.get("member_ids", []):
+            return error(code=403, message="无权限转存该群消息")
+
+        # 验证消息是否存在于该群组中
+        chat_collection = getattr(chat_db, message_data.group_id)
+        existing_messages = await chat_collection.find({
+            "id": {"$in": message_data.message_ids},
+            "is_revoke": False,
+        }).to_list(None)
+
+        if not existing_messages:
+            return error(code=404, message="消息不存在或已撤回")
+
+        # 只转存实际存在的消息ID
+        valid_message_ids = [msg["id"] for msg in existing_messages]
+
         group_forward = GroupForward(
             group_id=message_data.group_id,
-            message_ids=message_data.message_ids,
+            message_ids=valid_message_ids,
             forward_user_id=current_user.id,
         )
 
@@ -1403,16 +1430,171 @@ async def forward_messages(
         return error(code=500, message="转存出错")
 
 
+@router.post("/messages/forward-to-group", description="转发消息到群")
+async def forward_messages_to_group(
+    forward_data: ForwardToGroupRequest,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+    chat_db=Depends(get_chat_database),
+):
+    """
+    将消息从源群转发到目标群（类似QQ/微信的转发功能）。
+
+    注意：目标群允许和源群是同一个群。
+    因为“清空聊天记录”是用户维度的，可能出现 A 还有消息、B 已清空记录的情况；
+    这时 A 可以把消息重新转回原群，让 B 再次收到这些消息。
+
+    流程：
+    1. 校验用户在源群和目标群中都是成员
+    2. 获取源群的消息
+    3. 为每条消息生成新ID，发送到目标群
+    4. 通过WebSocket广播到目标群
+    """
+    try:
+        if not forward_data.message_ids:
+            return error(code=400, message="请选择要转发的消息")
+
+        # 1. 校验源群组
+        source_group = await db.groups.find_one({
+            "id": forward_data.source_group_id,
+            "is_dissolved": False,
+        })
+        if not source_group:
+            return error(code=404, message="源群组不存在或已解散")
+        if current_user.id not in source_group.get("member_ids", []):
+            return error(code=403, message="你不在源群组中")
+
+        # 2. 校验目标群组
+        target_group = await db.groups.find_one({
+            "id": forward_data.target_group_id,
+            "is_dissolved": False,
+        })
+        if not target_group:
+            return error(code=404, message="目标群组不存在或已解散")
+        if current_user.id not in target_group.get("member_ids", []):
+            return error(code=403, message="你不在目标群组中")
+
+        # 3. 检查目标群是否被禁言
+        from ..utils.group_mute import can_send_group_message
+        can_send, reason = can_send_group_message(target_group, current_user.id)
+        if not can_send:
+            return error(code=403, message=reason)
+
+        # 4. 获取源群消息
+        source_collection = getattr(chat_db, forward_data.source_group_id)
+        source_messages = await source_collection.find({
+            "id": {"$in": forward_data.message_ids},
+            "is_revoke": False,
+        }).sort("created_at", 1).to_list(None)
+
+        if not source_messages:
+            return error(code=404, message="消息不存在或已撤回")
+
+        # 5. 转发消息到目标群
+        target_collection = getattr(chat_db, forward_data.target_group_id)
+        forwarded_ids = []
+
+        for msg in source_messages:
+            # 生成新的消息ID
+            new_message_id = str(uuid.uuid4())
+            forwarded_ids.append(new_message_id)
+
+            # 构建转发消息（保留原消息内容，但标记为转发）
+            forward_msg = {
+                "id": new_message_id,
+                "type": msg.get("type", "text"),
+                "content": msg.get("content"),
+                "sender_id": current_user.id,  # 转发者成为发送者
+                "sender_username": current_user.username,
+                "sender_avatar": current_user.avatar,
+                "group_id": forward_data.target_group_id,
+                "cite": None,  # 转发消息不保留引用
+                "at_list": [],
+                "read_list": [],
+                "is_revoke": False,
+                "is_deleted": False,
+                "created_at": datetime.now(),
+                "forward_from": {  # 标记转发来源
+                    "group_id": forward_data.source_group_id,
+                    "group_name": source_group.get("name", "未知群组"),
+                    "original_sender_id": msg.get("sender_id"),
+                    "original_sender_username": msg.get("sender_username"),
+                    "original_time": msg.get("created_at"),
+                },
+            }
+
+            # 如果是媒体消息，保留文件信息
+            if msg.get("type") in ["image", "video", "audio", "file"]:
+                forward_msg["file_id"] = msg.get("file_id")
+                forward_msg["duration"] = msg.get("duration")
+
+            # 插入目标群数据库
+            await target_collection.insert_one(forward_msg)
+
+            # 通过WebSocket广播到目标群（异步执行，不等待结果）
+            from ..utils.websocket_manager import connection_manager
+            import asyncio
+            asyncio.create_task(
+                connection_manager.broadcast_to_group(
+                    forward_data.target_group_id,
+                    target_group.get("member_ids", []),
+                    {
+                        "type": "new_message",
+                        "data": forward_msg,
+                    }
+                )
+            )
+
+        # 6. 更新目标群的最后一条消息
+        await db.groups.update_one(
+            {"id": forward_data.target_group_id},
+            {"$set": {"last_message": {
+                "content": f"[转发] {len(source_messages)}条消息",
+                "sender_id": current_user.id,
+                "sender_username": current_user.username,
+                "created_at": datetime.now(),
+            }}}
+        )
+
+        logger.info(
+            f"用户 {current_user.username} 从群 {source_group.get('name')} "
+            f"转发 {len(source_messages)} 条消息到群 {target_group.get('name')}"
+        )
+
+        return success(data=ForwardToGroupResponse(
+            source_group_id=forward_data.source_group_id,
+            target_group_id=forward_data.target_group_id,
+            forwarded_count=len(source_messages),
+            message_ids=forwarded_ids,
+        ).model_dump())
+
+    except Exception as e:
+        logger.error(f"转发消息出错: {e}")
+        return error(code=500, message="转发消息失败")
+
+
 @router.get("/messages/get_forward/{forward_id}", description="获取转存记录")
 async def get_forwarded_message(
     forward_id: str,
     manage_db=Depends(get_database),
     chat_db=Depends(get_chat_database),
 ):
+    """
+    获取转存的聊天记录（公开访问）
+    任何知道链接的人都可以查看，不需要登录
+    """
     try:
         document = await manage_db.group_forwards.find_one({"id": forward_id})
         if not document:
             return error(code=404, message="分享记录不存在")
+
+        # 校验源群组是否存在
+        source_group = await manage_db.groups.find_one({
+            "id": document["group_id"],
+            "is_dissolved": False,
+        })
+        if not source_group:
+            return error(code=404, message="源群组不存在或已解散")
 
         chat_collection = getattr(chat_db, document["group_id"])
         messages = await chat_collection.find({
@@ -1444,10 +1626,22 @@ async def get_forwarded_message_page(
     manage_db=Depends(get_database),
     chat_db=Depends(get_chat_database),
 ):
+    """
+    渲染转存消息的分享页面（公开访问）
+    任何知道链接的人都可以查看，不需要登录
+    """
     try:
         document = await manage_db.group_forwards.find_one({"id": forward_id})
         if not document:
             return HTMLResponse(content="分享记录不存在", status_code=404)
+
+        # 校验源群组是否存在
+        source_group = await manage_db.groups.find_one({
+            "id": document["group_id"],
+            "is_dissolved": False,
+        })
+        if not source_group:
+            return HTMLResponse(content="源群组不存在或已解散", status_code=404)
 
         chat_collection = getattr(chat_db, document["group_id"])
         messages = await chat_collection.find({
@@ -1483,9 +1677,21 @@ async def get_forwarded_message_page(
 async def get_user_unread_at_messages(
     group_id: str,
     current_user: User = Depends(get_current_user),
+    manage_db=Depends(get_database),
     chat_db=Depends(get_chat_database),
 ):
     try:
+        # 权限校验：检查群组是否存在且用户是否为群成员
+        group = await manage_db.groups.find_one({
+            "id": group_id,
+            "is_dissolved": False,
+        })
+        if not group:
+            return error(code=404, message="群组不存在或已解散")
+
+        if current_user.id not in group.get("member_ids", []):
+            return error(code=403, message="你不在该群组中")
+
         chat_data = (
             await getattr(chat_db, group_id)
             .find({
@@ -1698,5 +1904,4 @@ async def clear_group_messages(
     except Exception as e:
         logger.error(f"清空会话消息出错: {e}")
         return error(code=500, message="清空会话消息出错")
-
 
