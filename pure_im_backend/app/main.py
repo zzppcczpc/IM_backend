@@ -53,13 +53,14 @@ async def block_scanners(request: Request, call_next):
 
 
 def create_routes():
-    from .routes import auth, chat, group_route, user_route, file_route
+    from .routes import auth, chat, group_route, user_route, file_route, ai_route
 
     app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
     app.include_router(chat.router, prefix="/api/chat", tags=["聊天"])
     app.include_router(group_route.router, prefix="/api/group", tags=["群组"])
     app.include_router(user_route.router, prefix="/api/user", tags=["用户"])
     app.include_router(file_route.router, prefix="/api/files", tags=["文件"])
+    app.include_router(ai_route.router, prefix="/api/ai", tags=["AI"])
 
 
 create_routes()
@@ -100,7 +101,4 @@ async def health_check():
         "websocket_stats": stats
     }
 
-"""
-11111111
 
-"""

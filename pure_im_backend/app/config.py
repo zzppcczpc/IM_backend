@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     CORS_ALLOW_ORIGINS: list[str] = ["*"]
     CORS_ALLOW_CREDENTIALS: bool = False
 
+    AI_PROVIDER: str = "openai_compatible"
+    AI_BASE_URL: str = ""
+    AI_API_KEY: str = ""
+    AI_MODEL_NAME: str = ""
+    AI_HEALTHCHECK_TIMEOUT: float = 10.0
+
     SMTP_SERVER: str = ""
     SMTP_PORT: int = 465
     SMTP_USERNAME: str = ""
