@@ -5,6 +5,19 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, EmailStr
 
 
+class AIProviderConfig(BaseModel):
+    provider: str = "openai_compatible"
+    base_url: str
+    api_key: str
+    selected_model: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now())
+    updated_at: datetime = Field(default_factory=lambda: datetime.now())
+
+
+class UserSetting(BaseModel):
+    ai_provider_config: Optional[AIProviderConfig] = None
+
+
 class User(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     username: str
@@ -20,6 +33,7 @@ class User(BaseModel):
     friends: List[str] = Field(default_factory=list)
     friend_requests: List[dict] = Field(default_factory=list)
     is_temp_user: bool = False
+    user_setting: UserSetting = Field(default_factory=UserSetting)
 
     class Config:
         populate_by_name = True
