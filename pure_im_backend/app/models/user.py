@@ -18,6 +18,11 @@ class UserSetting(BaseModel):
     ai_provider_config: Optional[AIProviderConfig] = None
 
 
+class UserService(BaseModel):
+    token_usage: int = 0
+    filestorage_usage: float = 0
+
+
 class User(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     username: str
@@ -34,6 +39,7 @@ class User(BaseModel):
     friend_requests: List[dict] = Field(default_factory=list)
     is_temp_user: bool = False
     user_setting: UserSetting = Field(default_factory=UserSetting)
+    user_service: UserService = Field(default_factory=UserService)
 
     class Config:
         populate_by_name = True

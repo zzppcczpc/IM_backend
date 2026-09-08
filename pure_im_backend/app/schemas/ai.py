@@ -41,3 +41,24 @@ class AISelectedModelRequest(BaseModel):
 class AIModelResponse(BaseModel):
     id: str
     name: str
+
+
+class AIModelUsageStats(BaseModel):
+    model_name: str
+    total_calls: int = 0
+    success_calls: int = 0
+    failed_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+class AIUsageStatsResponse(BaseModel):
+    user_id: str
+    total_calls: int = 0
+    success_calls: int = 0
+    failed_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    models: list[AIModelUsageStats] = Field(default_factory=list)

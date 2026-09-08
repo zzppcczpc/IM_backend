@@ -1,13 +1,39 @@
+这个项目由三个部分组成：前端、后端、MongoDB外部依赖
+Pure IM 启动教程
+
+1、启动mongodb
+先打开docker desktop
+
+cd C:\Users\zlf\Desktop\IM\IM_backend\pure_im_backend
+docker compose up -d mongodb
 
 
-启动后端，mongodb是启动本地。
-Start-Service MongoDB
-cd C:\Users\22077\Desktop\deep\myproject\IM_backend\pure_im_backend
+2、启动后端
+
 conda activate learn
-python run.py
 
-启动前端
-cd C:\Users\22077\Desktop\deep\myproject\IM_front\front_IM\src
+#后面的是路径，你项目地址变了后面cd 的路径也要变
+
+
+cd C:\Users\zlf\Desktop\IM\IM_backend\pure_im_backend
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+
+
+#后端启动完后，看看这两地址能不能打开，能打开才算是真的启动了
+后端健康检查：
+http://localhost:8000/health
+
+后端接口文档：
+http://localhost:8000/docs
+
+3、启动前端
+
+#后面的是路径，你项目地址变了后面cd 的路径也要变
+cd C:\Users\zlf\Desktop\IM\IM_front\front_IM
 npm run dev
+
+
+
 
 
