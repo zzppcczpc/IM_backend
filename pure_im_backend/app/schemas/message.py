@@ -17,11 +17,20 @@ class MessageData(BaseModel):
     read_list: List[str] = Field(default_factory=list)
     is_revoke: bool = False
     is_deleted: bool = False
+    is_AI: bool = False
+    is_streaming: bool = False
+    stop: bool = False
+    model_id: Optional[str] = None
+    model_name: Optional[str] = None
+    ai_parent_message_id: Optional[str] = None
     created_at: datetime
     duration: Optional[float] = None
     revoke_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
     deleted_by_users: List[str] = Field(default_factory=list)  # 删除该消息的用户ID列表
+    recommend_questions: List[str] = Field(default_factory=list)
+    citations: List[dict] = Field(default_factory=list)
+    error_message: Optional[str] = None
 
 
 class MessageResponse(BaseModel):
@@ -37,12 +46,21 @@ class MessageResponse(BaseModel):
     read_list: List[str] = Field(default_factory=list)
     is_revoke: bool = False
     is_deleted: bool = False
+    is_AI: bool = False
+    is_streaming: bool = False
+    stop: bool = False
+    model_id: Optional[str] = None
+    model_name: Optional[str] = None
+    ai_parent_message_id: Optional[str] = None
     created_at: datetime
     duration: Optional[float] = None
     revoke_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
     is_read: bool = False
     deleted_by_users: List[str] = Field(default_factory=list)  # 删除该消息的用户ID列表
+    recommend_questions: List[str] = Field(default_factory=list)
+    citations: List[dict] = Field(default_factory=list)
+    error_message: Optional[str] = None
 
 
 class StopMessage(BaseModel):

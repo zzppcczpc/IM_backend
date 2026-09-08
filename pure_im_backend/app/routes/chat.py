@@ -121,6 +121,15 @@ class MessageHandler:
         at_list: list = None,
         duration: float = None,
         sound_file_id: str = None,
+        is_AI: bool = False,
+        is_streaming: bool = False,
+        stop: bool = False,
+        model_id: str | None = None,
+        model_name: str | None = None,
+        ai_parent_message_id: str | None = None,
+        recommend_questions: list[str] | None = None,
+        citations: list[dict] | None = None,
+        error_message: str | None = None,
     ) -> Message:
         '''at_list：@了哪些人
             duration：语音时长
@@ -128,7 +137,7 @@ class MessageHandler:
         
         """创建并保存消息"""
         user = await manage_db.users.find_one({"id": sender_id})
-        if not user:
+        if not user and not is_AI:
             return None
 
         group_collection = getattr(chat_db, group_id)
@@ -145,13 +154,22 @@ class MessageHandler:
             type=msg_type,
             content=content,
             sender_id=sender_id,
-            sender_username=user.get("username", ""),
-            sender_avatar=user.get("avatar"),
+            sender_username=(user.get("username", "") if user else (model_name or sender_id)),
+            sender_avatar=(user.get("avatar") if user else None),
             group_id=group_id,
             at_list=at_list or [],
-            read_list=[sender_id],
+            read_list=[sender_id] if user else [],
             duration=duration,
             sound_file_id=sound_file_id,
+            is_AI=is_AI,
+            is_streaming=is_streaming,
+            stop=stop,
+            model_id=model_id,
+            model_name=model_name,
+            ai_parent_message_id=ai_parent_message_id,
+            recommend_questions=recommend_questions or [],
+            citations=citations or [],
+            error_message=error_message,
         )
 
         if cite_id:
@@ -203,11 +221,20 @@ async def broadcast_and_save_msg(
     group_id,
     sender_id,
     cite_id=None,
-    sound_file_id=None,
-    duration=None,
-    save_message=True,
-    at_list=None,
-    broadcast_ids=None,
+        sound_file_id=None,
+        duration=None,
+        save_message=True,
+        at_list=None,
+        broadcast_ids=None,
+        is_AI: bool = False,
+        is_streaming: bool = False,
+        stop: bool = False,
+        model_id: str | None = None,
+        model_name: str | None = None,
+        ai_parent_message_id: str | None = None,
+        recommend_questions: list[str] | None = None,
+        citations: list[dict] | None = None,
+        error_message: str | None = None,
 ):
     chat_db = await get_chat_database()
     handler = MessageHandler()
@@ -223,6 +250,15 @@ async def broadcast_and_save_msg(
         at_list=at_list or [],
         duration=duration,
         sound_file_id=sound_file_id,
+        is_AI=is_AI,
+        is_streaming=is_streaming,
+        stop=stop,
+        model_id=model_id,
+        model_name=model_name,
+        ai_parent_message_id=ai_parent_message_id,
+        recommend_questions=recommend_questions,
+        citations=citations,
+        error_message=error_message,
     )
 
     if not message:
