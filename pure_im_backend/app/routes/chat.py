@@ -14,6 +14,8 @@ from ..utils.group_mute import can_send_group_message
 from ..utils.websocket_manager import connection_manager
 from ..utils.log import logger
 from ..utils.message_query import build_message_query
+from ..utils.ai_service import ai_service
+from ..utils.security import decrypt_api_key
 from ..schemas.response import error, success
 
 router = APIRouter()
@@ -104,6 +106,166 @@ def to_client_data(value: Any):
     if value.__class__.__name__ == "ObjectId":
         return str(value)  # ObjectId 是 MongoDB 自动生成的 _id 类型，前端不能直接识别，所以要转成字符串
     return value
+
+
+async def _record_group_ai_call_log(
+    *,
+    user_id: str,
+    model_name: str | None,
+    success_flag: bool,
+    started_at: datetime,
+    finished_at: datetime,
+    usage: dict | None = None,
+    error_message: str | None = None,
+):
+    """复用需求4的调用日志逻辑，保证群聊触发的 AI 调用也进入统计。"""
+    from .ai_route import _record_ai_call_log
+
+    await _record_ai_call_log(
+        user_id=user_id,
+        model_name=model_name,
+        success_flag=success_flag,
+        started_at=started_at,
+        finished_at=finished_at,
+        usage=usage,
+        error_message=error_message,
+    )
+
+
+async def _send_ai_reply_error(
+    *,
+    user_id: str,
+    group_id: str,
+    user_message_id: str,
+    error_message: str,
+):
+    await connection_manager.send_to_user(
+        user_id,
+        {
+            "type": "ai_reply_error",
+            "group_id": group_id,
+            "content": {
+                "user_message_id": user_message_id,
+                "group_id": group_id,
+                "error_message": error_message,
+            },
+        },
+    )
+
+
+async def _generate_group_ai_reply(
+    *,
+    manage_db,
+    chat_db,
+    group: dict,
+    user_data: dict,
+    user_message: Message,
+    requested_model_name: str | None,
+):
+    """群聊 AI 回复第一阶段：非流式生成并落成一条新的群消息。"""
+    started_at = datetime.now()
+    group_id = group["id"]
+    user_id = user_data["id"]
+    provider_config = (user_data.get("user_setting") or {}).get("ai_provider_config") or {}
+    model_name = requested_model_name or provider_config.get("selected_model")
+
+    async def fail(message: str):
+        await _record_group_ai_call_log(
+            user_id=user_id,
+            model_name=model_name,
+            success_flag=False,
+            started_at=started_at,
+            finished_at=datetime.now(),
+            error_message=message,
+        )
+        await _send_ai_reply_error(
+            user_id=user_id,
+            group_id=group_id,
+            user_message_id=user_message.id,
+            error_message=message,
+        )
+
+    if not provider_config:
+        await fail("请先在 AI 对话中保存接口配置")
+        return
+    if not model_name:
+        await fail("请先选择一个 AI 模型")
+        return
+
+    try:
+        stored_api_key = provider_config.get("api_key") or ""
+        api_key = decrypt_api_key(stored_api_key) if stored_api_key else ""
+        config = ai_service.build_user_config(provider_config, api_key, model_name)
+    except Exception:
+        await fail("AI API Key 解密失败，请重新保存接口配置")
+        return
+
+    try:
+        result = await ai_service.chat(
+            message=user_message.content,
+            config=config,
+        )
+    except Exception as exc:
+        logger.error(f"群聊 AI 回复生成失败: {exc}", exc_info=True)
+        await fail("AI回复生成失败，请稍后重试")
+        return
+
+    if not result["ok"]:
+        await fail(result["error"])
+        return
+
+    response_data = result["data"]
+    actual_model_name = response_data.get("model") or model_name
+    try:
+        ai_message = await MessageHandler.create_message(
+            manage_db=manage_db,
+            chat_db=chat_db,
+            group_id=group_id,
+            sender_id="ai",
+            content=response_data["content"],
+            msg_type="text",
+            cite_id=user_message.id,
+            is_AI=True,
+            model_id=model_name,
+            model_name=actual_model_name,
+            ai_parent_message_id=user_message.id,
+        )
+    except Exception as exc:
+        logger.error(f"群聊 AI 消息保存失败: {exc}", exc_info=True)
+        await fail("AI消息保存失败")
+        return
+
+    if not ai_message:
+        await fail("AI消息保存失败")
+        return
+
+    try:
+        await MessageHandler.broadcast_to_group(manage_db, group_id, ai_message)
+    except Exception as exc:
+        logger.error(f"群聊 AI 消息广播失败: {exc}", exc_info=True)
+        await fail("AI消息广播失败")
+        return
+    await _record_group_ai_call_log(
+        user_id=user_id,
+        model_name=actual_model_name,
+        success_flag=True,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        usage=response_data.get("usage"),
+    )
+    await connection_manager.send_to_user(
+        user_id,
+        {
+            "type": "ai_reply_success",
+            "group_id": group_id,
+            "content": {
+                "user_message_id": user_message.id,
+                "ai_message_id": ai_message.id,
+                "group_id": group_id,
+                "ai_content": ai_message.content,
+            },
+        },
+    )
 
 
 class MessageHandler:
@@ -538,6 +700,23 @@ async def websocket_endpoint(
                                 "success": True
                             }
                         })
+
+                        # 需求6：用户消息先入群，再异步触发一条非流式 AI 回复。
+                        # 私聊暂不触发，避免改变原有私聊行为。
+                        if data.get("trigger_ai") and group.get("type", "group") != "private":
+                            requested_model_name = data.get("ai_model_name")
+                            if requested_model_name is not None and not isinstance(requested_model_name, str):
+                                requested_model_name = None
+                            asyncio.create_task(
+                                _generate_group_ai_reply(
+                                    manage_db=manage_db,
+                                    chat_db=chat_db,
+                                    group=group,
+                                    user_data=user_data,
+                                    user_message=message,
+                                    requested_model_name=requested_model_name,
+                                )
+                            )
 
                 # 撤回消息
                 elif data.get("type") == "revoke":
