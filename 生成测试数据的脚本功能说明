@@ -5,29 +5,25 @@ IM_backend/pure_im_backend/scripts/generate_test_data.py
 功能概述
 一键生成MongoDB测试数据，包括用户、好友关系、群组、聊天消息。
 
-### 进入后端目录########## 
-cd c:\Users\zlf\Desktop\IM\IM_backend\pure_im_backend
+### 进入后端目录##########
+cd D:\Lenovo\桌面\IM\IM_backend\pure_im_backend
 
-# #####清空并生成新数据（30用户，250条消息）#########
-D:\Miniconda\envs\learn\python.exe scripts\generate_test_data.py --clean
-————————————————————————
-生成的数据：
-	30个测试用户（密码统一 123456）
-	5个群组（全员大群、产品研发组、技术交流群、项目小分队、休闲茶话会）
-	好友关系（每人5-15个好友）
-	250条聊天消息（文本、语音、文件、@提及）
-# ######自定义数量######
-D:\Miniconda\envs\learn\python.exe scripts\generate_test_data.py --clean --users 50 --messages 500
+# #####清空并生成新数据自定义数量数据（
+用户: 50个（自定义）
+群组: 5个（固定）
+消息: 500条（自定义）
 -----------------------------------------------------------------
-测试用户_李: test_lisi@example.com
+python scripts\generate_test_data.py --clean --users 50 --messages 500
+-----------------------------------------------------------------
+  测试用户_李: test_lisi@example.com
   测试用户_赵: test_zhaoliu@example.com
   测试用户_陈: test_chenqi@example.com
-  ... 还有 45 个用户
+  ... 共50个用户
 
 使用以下命令登录测试:
   邮箱: test_zhangsan@example.com
   密码: 123456
 # 查看帮助
-D:\Miniconda\envs\learn\python.exe scripts\generate_test_data.py --help
+python scripts\generate_test_data.py --help
 
 

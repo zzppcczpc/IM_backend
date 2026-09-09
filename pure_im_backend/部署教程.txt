@@ -1,0 +1,79 @@
+ 打开PowerShell 
+步骤1：Docker安装MongoDB（全部复制，允许docker访问网络）
+
+# 1. 拉取MongoDB镜像
+docker pull mongo:7.0
+
+# 2. 运行MongoDB容器
+docker run -d `
+  --name im-mongodb `
+  -p 27017:27017 `
+  -v mongodb_data:/data/db `
+  --restart unless-stopped `
+  mongo:7.0
+
+# 3. 验证容器是否运行
+docker ps
+
+docker Desktop里的Containers会多一条Name为 im-mongodb的记录
+
+步骤2: Anaconda创建虚拟环境（这里一条条复制）
+搜索 Anaconda Prompt
+# 1. 创建虚拟环境 (Python 3.10推荐)
+conda create -n im-backend python=3.10 -y
+
+# 2. 激活虚拟环境
+conda activate im-backend
+
+# 3. 进入项目目录（夸盘C→D，所以加/d）
+cd /d D:\Lenovo\桌面\IM\IM_backend\pure_im_backend
+
+# 4. 安装依赖
+python -m pip install -r requirements.txt
+
+# 如果启动或运行测试数据脚本时提示缺少 email-validator，补装该依赖
+python -m pip install email-validator
+
+# 说明：email-validator 已经写在 requirements.txt 中，完整执行上面的依赖安装后通常会自动安装。
+
+
+步骤3：安装 Node.js：
+
+打开 https://nodejs.org/
+下载 LTS 版本（长期支持版）下.smi直接装在 Windows 上
+安装时一路点"下一步"即可
+
+Node.js 的安装路径 D:\Program Files\Node.js 加到了系统 PATH 环境变量里，让 PowerShell 能找到 node 和 npm 命令。
+
+
+验证安装：
+
+node --version
+npm --version
+有两个版本号就对了
+---------------------------------------
+
+
+问题：我后面要在powershell里启动项目，要是打开powershell路径前面没有（base）就说明Conda没在powershell初始化
+在 Anaconda Prompt 里执行：conda init powershell，然后关掉powershell（要全部关掉再进去看）
+
+
+步骤4：启动项目
+# 0.打开Docker Desktop
+
+# 1. 启动MongoDB (在PowerShell执行)
+docker start im-mongodb
+
+# 2. 进入项目目录并激活环境 (在Anaconda Prompt执行)
+cd  D:\Lenovo\桌面\IM\IM_backend\pure_im_backend
+conda activate im-backend
+
+# 3. 启动后端
+python run.py
+
+#4启动前端
+打开一个新的 PowerShell：
+cd D:\Lenovo\桌面\IM\IM_front\front_IM
+npm run dev
+
+已初始化测试账号: test1@example.com / 123456, test2@example.com / 123456
