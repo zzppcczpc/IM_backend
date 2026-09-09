@@ -17,13 +17,6 @@ class AIChatResponse(BaseModel):
     usage: Optional[dict] = None
 
 
-class AIProviderConfigRequest(BaseModel):
-    provider: str = Field(default="openai_compatible")
-    base_url: str = Field(..., min_length=1)
-    api_key: str = Field(..., min_length=1)
-    selected_model: Optional[str] = None
-
-
 class AIProviderConfigResponse(BaseModel):
     provider: str
     base_url: str
@@ -32,10 +25,6 @@ class AIProviderConfigResponse(BaseModel):
     selected_model: Optional[str] = None
     created_at: str
     updated_at: str
-
-
-class AISelectedModelRequest(BaseModel):
-    model_name: str = Field(..., min_length=1, description="当前用户选中的模型名称")
 
 
 class AIModelResponse(BaseModel):

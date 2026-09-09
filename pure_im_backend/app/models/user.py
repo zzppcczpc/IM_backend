@@ -5,17 +5,8 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, EmailStr
 
 
-class AIProviderConfig(BaseModel):
-    provider: str = "openai_compatible"
-    base_url: str
-    api_key: str
-    selected_model: Optional[str] = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now())
-    updated_at: datetime = Field(default_factory=lambda: datetime.now())
-
-
 class UserSetting(BaseModel):
-    ai_provider_config: Optional[AIProviderConfig] = None
+    pass
 
 
 class UserService(BaseModel):

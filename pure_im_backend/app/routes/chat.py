@@ -15,73 +15,10 @@ from ..utils.websocket_manager import connection_manager
 from ..utils.log import logger
 from ..utils.message_query import build_message_query
 from ..utils.ai_service import ai_service
-from ..utils.security import decrypt_api_key
 from ..schemas.response import error, success
 
 router = APIRouter()
 
-
-async def _get_offline_messages(
-    manage_db,
-    chat_db,
-    user_id: str,
-    last_offline_time,
-    group_ids: list
-) -> list:
-    """
-    查询用户离线消息
-    Args:
-        manage_db: 管理数据库
-        chat_db: 聊天数据库
-        user_id: 用户ID
-        last_offline_time: 上次离线时间（可能为空）
-        group_ids: 用户所在的群组ID列表
-    Returns:
-        离线消息列表，按群组分组
-    """
-    from app.utils.message_query import build_message_query
-
-    offline_messages = []
-
-    for group_id in group_ids:
-        chat_collection = getattr(chat_db, group_id)
-
-        # 使用公共函数构建基础查询条件
-        query = await build_message_query(
-            user_id=user_id,
-            group_id=group_id,
-            manage_db=manage_db,
-        )
-        query["sender_id"] = {"$ne": user_id}  # 离线消息排除自己的消息
-
-        # 离线时间过滤：如果有离线时间，需要调整时间过滤
-        if last_offline_time:
-            # 查询用户对该群组的清空记录，取较晚的时间点
-            clear_record = await manage_db.user_cleared_groups.find_one({
-                "user_id": user_id,
-                "group_id": group_id,
-            })
-
-            # 确定最终的时间过滤条件
-            if clear_record:
-                clear_time = clear_record["cleared_at"]
-                # 取清空时间和离线时间中较晚的那个
-                effective_time = max(clear_time, last_offline_time)
-            else:
-                effective_time = last_offline_time
-
-            query["created_at"] = {"$gt": effective_time}
-
-        # 查询消息，按时间排序
-        messages = await chat_collection.find(query).sort("created_at", 1).to_list(None)
-
-        if messages:
-            offline_messages.append({
-                "group_id": group_id,
-                "messages": to_client_data(messages)
-            })
-
-    return offline_messages
 
 '''这个函数是把 MongoDB 查出来的数据转换成前端能接收的 JSON 数据。
 主要做几件事：
@@ -160,14 +97,13 @@ async def _generate_group_ai_reply(
     group: dict,
     user_data: dict,
     user_message: Message,
-    requested_model_name: str | None,
 ):
     """群聊 AI 回复第一阶段：非流式生成并落成一条新的群消息。"""
     started_at = datetime.now()
     group_id = group["id"]
     user_id = user_data["id"]
-    provider_config = (user_data.get("user_setting") or {}).get("ai_provider_config") or {}
-    model_name = requested_model_name or provider_config.get("selected_model")
+    platform_config = ai_service.get_default_config()
+    model_name = platform_config.model_name
 
     async def fail(message: str):
         await _record_group_ai_call_log(
@@ -185,25 +121,14 @@ async def _generate_group_ai_reply(
             error_message=message,
         )
 
-    if not provider_config:
-        await fail("请先在 AI 对话中保存接口配置")
-        return
-    if not model_name:
-        await fail("请先选择一个 AI 模型")
-        return
-
-    try:
-        stored_api_key = provider_config.get("api_key") or ""
-        api_key = decrypt_api_key(stored_api_key) if stored_api_key else ""
-        config = ai_service.build_user_config(provider_config, api_key, model_name)
-    except Exception:
-        await fail("AI API Key 解密失败，请重新保存接口配置")
+    if not platform_config.configured:
+        await fail("平台 AI 尚未完成配置，请联系管理员")
         return
 
     try:
         result = await ai_service.chat(
             message=user_message.content,
-            config=config,
+            config=platform_config,
         )
     except Exception as exc:
         logger.error(f"群聊 AI 回复生成失败: {exc}", exc_info=True)
@@ -578,39 +503,6 @@ async def websocket_endpoint(
             }
         })
 
-        # ===== 为每个群组发送最近消息（仅10条）=====
-        for group_id in group_ids:
-            chat_collection = getattr(chat_db, group_id)
-
-            # 使用公共函数构建查询条件，统一过滤逻辑
-            from app.utils.message_query import build_message_query
-            query = await build_message_query(
-                user_id=user.id,
-                group_id=group_id,
-                manage_db=manage_db,
-            )
-
-            # 查询最近10条消息
-            recent = await chat_collection.find(query).sort("created_at", -1).limit(10).to_list(None)
-            recent.reverse()
-
-            if recent:
-                await websocket.send_json({
-                    "type": "group_history",
-                    "group_id": group_id,
-                    "content": to_client_data(recent),
-                })
-
-        # ===== 发送离线消息 =====
-        offline_messages = await _get_offline_messages(
-            manage_db, chat_db, user.id, user_data.get("last_offline_time"), group_ids
-        )
-        if offline_messages:
-            await websocket.send_json({
-                "type": "offline_messages",
-                "content": offline_messages
-            })
-
         # ===== 消息处理循环 =====
         handler = MessageHandler()
 
@@ -704,9 +596,6 @@ async def websocket_endpoint(
                         # 需求6：用户消息先入群，再异步触发一条非流式 AI 回复。
                         # 私聊暂不触发，避免改变原有私聊行为。
                         if data.get("trigger_ai") and group.get("type", "group") != "private":
-                            requested_model_name = data.get("ai_model_name")
-                            if requested_model_name is not None and not isinstance(requested_model_name, str):
-                                requested_model_name = None
                             asyncio.create_task(
                                 _generate_group_ai_reply(
                                     manage_db=manage_db,
@@ -714,7 +603,6 @@ async def websocket_endpoint(
                                     group=group,
                                     user_data=user_data,
                                     user_message=message,
-                                    requested_model_name=requested_model_name,
                                 )
                             )
 

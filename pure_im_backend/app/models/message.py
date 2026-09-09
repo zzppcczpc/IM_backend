@@ -19,6 +19,7 @@ class Message(BaseModel):
     read_list: list = Field(default_factory=list)
     is_revoke: bool = False
     is_deleted: bool = False  # 新增：软删除标记
+    #这是新加Ai消息 的标记
     is_AI: bool = False
     is_streaming: bool = False
     stop: bool = False
@@ -28,6 +29,7 @@ class Message(BaseModel):
     recommend_questions: List[str] = Field(default_factory=list)
     citations: List[dict] = Field(default_factory=list)
     error_message: Optional[str] = None
+    # === end AI message fields
     created_at: datetime = Field(default_factory=lambda: datetime.now())
     duration: Optional[float] = None  # 语音时长
     sound_file_id: Optional[str] = None  # 语音文件ID
