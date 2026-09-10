@@ -98,14 +98,36 @@ async def _generate_group_ai_reply(
     user_data: dict,
     user_message: Message,
 ):
-    """群聊 AI 回复第一阶段：非流式生成并落成一条新的群消息。"""
+    """群聊 AI 流式回复：先创建空消息，再持续增量更新同一条消息。"""
     started_at = datetime.now()
     group_id = group["id"]
     user_id = user_data["id"]
     platform_config = ai_service.get_default_config()
     model_name = platform_config.model_name
+    group_collection = getattr(chat_db, group_id)
+    ai_message: Message | None = None
+    usage = None
+
+    async def safe_broadcast(message: Message):
+        try:
+            await MessageHandler.broadcast_to_group(manage_db, group_id, message)
+        except Exception as exc:
+            logger.error(f"群聊 AI 消息广播失败: {exc}", exc_info=True)
 
     async def fail(message: str):
+        if ai_message:
+            ai_message.is_streaming = False
+            ai_message.error_message = message
+            if not ai_message.content:
+                ai_message.content = "AI回复生成失败"
+            await MessageHandler.update_message(
+                manage_db=manage_db,
+                group_collection=group_collection,
+                group_id=group_id,
+                message=ai_message,
+            )
+            await safe_broadcast(ai_message)
+
         await _record_group_ai_call_log(
             user_id=user_id,
             model_name=model_name,
@@ -121,38 +143,19 @@ async def _generate_group_ai_reply(
             error_message=message,
         )
 
-    if not platform_config.configured:
-        await fail("平台 AI 尚未完成配置，请联系管理员")
-        return
-
-    try:
-        result = await ai_service.chat(
-            message=user_message.content,
-            config=platform_config,
-        )
-    except Exception as exc:
-        logger.error(f"群聊 AI 回复生成失败: {exc}", exc_info=True)
-        await fail("AI回复生成失败，请稍后重试")
-        return
-
-    if not result["ok"]:
-        await fail(result["error"])
-        return
-
-    response_data = result["data"]
-    actual_model_name = response_data.get("model") or model_name
     try:
         ai_message = await MessageHandler.create_message(
             manage_db=manage_db,
             chat_db=chat_db,
             group_id=group_id,
             sender_id="ai",
-            content=response_data["content"],
+            content="",
             msg_type="text",
             cite_id=user_message.id,
             is_AI=True,
+            is_streaming=True,
             model_id=model_name,
-            model_name=actual_model_name,
+            model_name=model_name,
             ai_parent_message_id=user_message.id,
         )
     except Exception as exc:
@@ -164,19 +167,61 @@ async def _generate_group_ai_reply(
         await fail("AI消息保存失败")
         return
 
-    try:
-        await MessageHandler.broadcast_to_group(manage_db, group_id, ai_message)
-    except Exception as exc:
-        logger.error(f"群聊 AI 消息广播失败: {exc}", exc_info=True)
-        await fail("AI消息广播失败")
+    if not platform_config.configured:
+        await fail("平台 AI 尚未完成配置，请联系管理员")
         return
+
+    await safe_broadcast(ai_message)
+
+    actual_model_name = model_name
+    try:
+        async for chunk in ai_service.stream_chat(
+            message=user_message.content,
+            config=platform_config,
+        ):
+            actual_model_name = chunk.get("model") or actual_model_name
+            if chunk.get("usage"):
+                usage = chunk["usage"]
+
+            delta = chunk.get("content") or ""
+            if not delta:
+                continue
+
+            ai_message.content += delta
+            ai_message.model_name = actual_model_name
+            await MessageHandler.update_message(
+                manage_db=manage_db,
+                group_collection=group_collection,
+                group_id=group_id,
+                message=ai_message,
+            )
+            await safe_broadcast(ai_message)
+    except Exception as exc:
+        logger.error(f"群聊 AI 流式回复生成失败: {exc}", exc_info=True)
+        await fail(str(exc) or "AI回复生成失败，请稍后重试")
+        return
+
+    ai_message.is_streaming = False
+    ai_message.model_name = actual_model_name
+    if not ai_message.content.strip():
+        await fail("AI服务返回的回答内容为空")
+        return
+
+    await MessageHandler.update_message(
+        manage_db=manage_db,
+        group_collection=group_collection,
+        group_id=group_id,
+        message=ai_message,
+    )
+    await safe_broadcast(ai_message)
+
     await _record_group_ai_call_log(
         user_id=user_id,
         model_name=actual_model_name,
         success_flag=True,
         started_at=started_at,
         finished_at=datetime.now(),
-        usage=response_data.get("usage"),
+        usage=usage,
     )
     await connection_manager.send_to_user(
         user_id,
@@ -297,6 +342,19 @@ class MessageHandler:
 
         await connection_manager.broadcast_to_group(
             group_id, group["member_ids"], broadcast_data
+        )
+
+    @staticmethod
+    async def update_message(manage_db, group_collection, group_id: str, message: Message):
+        """更新已经保存的消息，并同步群列表最后一条消息。"""
+        message_dict = message.model_dump()
+        await group_collection.update_one(
+            {"id": message.id},
+            {"$set": message_dict},
+        )
+        await manage_db.groups.update_one(
+            {"id": group_id, "last_message.id": message.id},
+            {"$set": {"last_message": message_dict}},
         )
 
 

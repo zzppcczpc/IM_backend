@@ -1,37 +1,23 @@
-这个项目由三个部分组成：前端、后端、MongoDB外部依赖
+[text](../../../部署教程.txt)这个项目由三个部分组成：前端、后端、MongoDB外部依赖
 Pure IM 启动教程
+# 0.打开Docker Desktop
 
-1、启动mongodb
-先打开docker desktop
+# 1. 启动MongoDB (在PowerShell执行)
+docker start im-mongodb
 
-cd C:\Users\zlf\Desktop\IM\IM_backend\pure_im_backend
-docker compose up -d mongodb
+# 2. 进入项目目录并激活环境 (在Anaconda Prompt执行)
+cd  D:\Lenovo\桌面\IM\IM_backend\pure_im_backend
+conda activate im-backend
 
+# 3. 启动后端
+python run.py
 
-2、启动后端
-
-conda activate learn
-
-#后面的是路径，你项目地址变了后面cd 的路径也要变
-
-
-cd C:\Users\zlf\Desktop\IM\IM_backend\pure_im_backend
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-
-
-
-#后端启动完后，看看这两地址能不能打开，能打开才算是真的启动了
-后端健康检查：
-http://localhost:8000/health
-
-后端接口文档：
-http://localhost:8000/docs
-
-3、启动前端
-
-#后面的是路径，你项目地址变了后面cd 的路径也要变
-cd C:\Users\zlf\Desktop\IM\IM_front\front_IM
+#4启动前端
+打开一个新的 PowerShell：
+cd D:\Lenovo\桌面\IM\IM_front\front_IM
 npm run dev
+
+已初始化测试账号: test1@example.com / 123456, test2@example.com / 123456
 
 
 

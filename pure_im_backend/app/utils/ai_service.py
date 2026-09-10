@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import Optional
+import json
+from typing import AsyncIterator, Optional
 
 import httpx
 
@@ -195,6 +196,74 @@ class AIService:
                 "data": config.public_dict(),
             }
 
+    async def stream_chat(
+        self,
+        message: str,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+        config: Optional[AIModelConfig] = None,
+    ) -> AsyncIterator[dict]:
+        """以 OpenAI-compatible SSE 格式逐段返回模型输出。"""
+        config = config or self.get_default_config()
+        if not config.configured:
+            raise ValueError(f"AI配置缺失: {', '.join(config.missing_fields())}")
+        if config.provider != "openai_compatible":
+            raise ValueError(f"暂不支持的AI服务提供方: {config.provider}")
+
+        payload = {
+            "model": config.model_name,
+            "messages": [{"role": "user", "content": message}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        url = f"{config.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+
+        async with httpx.AsyncClient(timeout=config.timeout) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    raise ValueError(
+                        self._format_stream_error(response.status_code, body)
+                    )
+
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+
+                    raw_data = line[5:].strip()
+                    if raw_data == "[DONE]":
+                        return
+
+                    try:
+                        chunk = json.loads(raw_data)
+                    except json.JSONDecodeError:
+                        continue
+
+                    choices = chunk.get("choices") or []
+                    choice = choices[0] if choices else {}
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        yield {
+                            "content": content,
+                            "model": chunk.get("model") or config.model_name,
+                            "usage": chunk.get("usage"),
+                        }
+
+                    if chunk.get("usage"):
+                        yield {
+                            "content": "",
+                            "model": chunk.get("model") or config.model_name,
+                            "usage": chunk["usage"],
+                        }
+
     # 统一发送 Chat Completions 请求，后续流式/多模型能力也可以在这里继续扩展。
     async def _post_chat_completions(self, config: AIModelConfig, payload: dict) -> dict:
         url = f"{config.base_url}/chat/completions"
@@ -241,6 +310,19 @@ class AIService:
         if detail:
             message = f"{message}, {detail}"
         raise ValueError(message)
+
+    def _format_stream_error(self, status_code: int, body: bytes) -> str:
+        detail = ""
+        try:
+            data = httpx.Response(status_code=status_code, content=body).json()
+            error_body = data.get("error") if isinstance(data, dict) else None
+            if isinstance(error_body, dict):
+                detail = error_body.get("message") or error_body.get("code") or ""
+        except ValueError:
+            detail = body.decode("utf-8", errors="ignore")[:200]
+
+        message = f"AI聊天请求失败: HTTP {status_code}"
+        return f"{message}, {detail}" if detail else message
 
 
 ai_service = AIService()
