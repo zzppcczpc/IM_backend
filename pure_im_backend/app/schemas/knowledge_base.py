@@ -24,3 +24,17 @@ class KnowledgeBaseResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
+class KnowledgeBaseFileResponse(BaseModel):
+    id: str
+    knowledge_base_id: str
+    owner_id: str
+    file_name: str
+    file_type: str
+    file_extension: str
+    file_size: int
+    status: str
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
