@@ -32,6 +32,20 @@ class Settings(BaseSettings):
     AI_MODEL_NAME: str = ""
     AI_HEALTHCHECK_TIMEOUT: float = 10.0
 
+    # 知识库向量化：本地加载 BGE-M3，同时生成 dense/sparse 表示。
+    EMBEDDING_PROVIDER: str = "local_bge_m3"
+    BGE_M3_MODEL_NAME: str = "BAAI/bge-m3"
+    BGE_M3_DEVICE: str = "auto"
+    BGE_M3_USE_FP16: bool = False
+    EMBEDDING_BATCH_SIZE: int = 8
+
+    # Milvus 默认连接本机 Docker 暴露的 19530 端口。
+    MILVUS_URI: str = "http://127.0.0.1:19530"
+    MILVUS_TOKEN: str = ""
+    MILVUS_DB_NAME: str = "default"
+    MILVUS_FILE_CHUNKS_COLLECTION: str = "file_chunks"
+    MILVUS_CONNECT_TIMEOUT: float = 5.0
+
     SMTP_SERVER: str = ""
     SMTP_PORT: int = 465
     SMTP_USERNAME: str = ""

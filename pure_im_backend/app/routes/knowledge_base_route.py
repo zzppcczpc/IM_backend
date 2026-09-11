@@ -23,6 +23,7 @@ from ..schemas.response import error, success
 from ..utils.auth import get_current_user
 from ..utils.knowledge_base_parser import parse_knowledge_base_file
 from ..utils.knowledge_base_chunker import split_text
+from ..utils.knowledge_base_vectorizer import vectorize_and_store_file_chunks
 from ..utils.log import logger
 
 router = APIRouter()
@@ -53,7 +54,7 @@ def _file_response(document: dict) -> dict:
 
 
 async def _process_knowledge_base_file(file_id: str, db):
-    """后台完成文件解析和文本切分，并把结果和状态写回 MongoDB。"""
+    """后台完成文件解析、Chunk 切分和 Chunk 向量化。"""
     file_record = await db.knowledge_base_files.find_one({"id": file_id})
     if not file_record:
         return
@@ -65,6 +66,7 @@ async def _process_knowledge_base_file(file_id: str, db):
             "$set": {
                 "status": "parsing",
                 "error_message": None,
+                "vector_error_message": None,
                 "updated_at": now,
             },
         },
@@ -112,9 +114,39 @@ async def _process_knowledge_base_file(file_id: str, db):
             {"id": file_id},
             {
                 "$set": {
+                    "status": "vectorizing",
+                    "chunk_count": len(chunk_documents),
+                    "error_message": None,
+                    "vector_error_message": None,
+                    "updated_at": datetime.now(),
+                },
+            },
+        )
+        try:
+            vectorize_and_store_file_chunks(chunk_documents)
+        except Exception as exc:
+            logger.error(f"知识库文件 Chunk 向量化失败: {file_id}, {exc}", exc_info=True)
+            await db.knowledge_base_files.update_one(
+                {"id": file_id},
+                {
+                    "$set": {
+                        "status": "failed",
+                        "vector_error_message": str(exc)[:1000],
+                        "error_message": "Chunk 已生成，但向量化入库失败",
+                        "updated_at": datetime.now(),
+                    },
+                },
+            )
+            return
+
+        await db.knowledge_base_files.update_one(
+            {"id": file_id},
+            {
+                "$set": {
                     "status": "success",
                     "chunk_count": len(chunk_documents),
                     "error_message": None,
+                    "vector_error_message": None,
                     "updated_at": datetime.now(),
                 },
             },
@@ -127,10 +159,54 @@ async def _process_knowledge_base_file(file_id: str, db):
                 "$set": {
                     "status": "failed",
                     "error_message": str(exc)[:1000],
+                    "vector_error_message": None,
                     "chunk_count": 0,
                     "updated_at": datetime.now(),
                 },
             },
+        )
+
+
+async def _vectorize_existing_file_chunks(file_id: str, db):
+    """重新读取 MongoDB 中已有 Chunk 并覆盖写入 Milvus。"""
+    file_record = await db.knowledge_base_files.find_one({"id": file_id})
+    if not file_record:
+        return
+    await db.knowledge_base_files.update_one(
+        {"id": file_id},
+        {"$set": {
+            "status": "vectorizing",
+            "error_message": None,
+            "vector_error_message": None,
+            "updated_at": datetime.now(),
+        }},
+    )
+    chunks = await db.knowledge_base_chunks.find(
+        {"file_id": file_id}
+    ).sort("chunk_index", 1).to_list(None)
+    try:
+        result = vectorize_and_store_file_chunks(chunks)
+        await db.knowledge_base_files.update_one(
+            {"id": file_id},
+            {"$set": {
+                "status": "success",
+                "chunk_count": len(chunks),
+                "error_message": None,
+                "vector_error_message": None,
+                "updated_at": datetime.now(),
+            }},
+        )
+        logger.info(f"知识库文件 Chunk 向量化完成: {file_id}, {result}")
+    except Exception as exc:
+        logger.error(f"知识库文件 Chunk 重新向量化失败: {file_id}, {exc}", exc_info=True)
+        await db.knowledge_base_files.update_one(
+            {"id": file_id},
+            {"$set": {
+                "status": "failed",
+                "error_message": "Chunk 已生成，但向量化入库失败",
+                "vector_error_message": str(exc)[:1000],
+                "updated_at": datetime.now(),
+            }},
         )
 
 
@@ -355,6 +431,40 @@ async def parse_knowledge_base_file_route(
     return success(
         message="已提交文件解析任务",
         data={"file_id": file_id, "status": "parsing"},
+    )
+
+
+@router.post(
+    "/{knowledge_base_id}/files/{file_id}/vectorize",
+    description="重新向量化知识库文件 Chunk",
+)
+async def vectorize_knowledge_base_file_route(
+    knowledge_base_id: str,
+    file_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    document = await db.knowledge_bases.find_one({"id": knowledge_base_id})
+    if not document:
+        return error(code=404, message="知识库不存在")
+    if not _can_access(document, current_user.id):
+        return error(code=403, message="无权限访问该知识库")
+
+    file_record = await db.knowledge_base_files.find_one({
+        "id": file_id,
+        "knowledge_base_id": knowledge_base_id,
+    })
+    if not file_record:
+        return error(code=404, message="知识库文件不存在")
+    chunk_count = await db.knowledge_base_chunks.count_documents({"file_id": file_id})
+    if chunk_count == 0:
+        return error(code=400, message="该文件还没有可向量化的 Chunk")
+
+    background_tasks.add_task(_vectorize_existing_file_chunks, file_id, db)
+    return success(
+        message="已提交 Chunk 向量化任务",
+        data={"file_id": file_id, "status": "vectorizing", "chunk_count": chunk_count},
     )
 
 

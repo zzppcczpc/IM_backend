@@ -29,6 +29,7 @@ class KnowledgeBaseFile(BaseModel):
     parsed_text: Optional[str] = None
     parse_metadata: dict[str, Any] = Field(default_factory=dict)
     chunk_count: int = 0
+    vector_error_message: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 

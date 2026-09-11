@@ -28,3 +28,7 @@ openpyxl>=3.1.0  # Excel文档解析
 # 工具
 jinja2>=3.1.0  # 模板渲染
 httpx>=0.25.0  # AI服务HTTP调用
+
+# 知识库向量化
+pymilvus>=2.5.0  # Milvus Python SDK
+FlagEmbedding>=1.3.5  # BGE-M3 dense/sparse embedding
