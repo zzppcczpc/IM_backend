@@ -27,6 +27,7 @@ logs/
 # Uploaded/generated runtime assets
 uploads/
 static/uploads/
+volumes/
 tmp/
 temp/
 

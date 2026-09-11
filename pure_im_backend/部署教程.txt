@@ -15,6 +15,22 @@ docker run -d `
 # 3. 验证容器是否运行
 docker ps
 
+
+#4安装milvus向量数据库
+Set-Location -LiteralPath "D:\Lenovo\桌面\IM\IM_backend\pure_im_backend"
+
+docker compose -f milvus-standalone-docker-compose.yml up -d
+
+
+启动milvus
+conda activate im-backend
+cd /d D:\Lenovo\桌面\IM\IM_backend\pure_im_backend
+
+docker compose -f milvus-standalone-docker-compose.yml up -d
+
+
+===
+
 docker Desktop里的Containers会多一条Name为 im-mongodb的记录
 
 步骤2: Anaconda创建虚拟环境（这里一条条复制）

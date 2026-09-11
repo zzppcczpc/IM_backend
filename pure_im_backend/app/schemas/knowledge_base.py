@@ -38,6 +38,7 @@ class KnowledgeBaseFileResponse(BaseModel):
     parsed_text: Optional[str] = None
     parse_metadata: dict = Field(default_factory=dict)
     chunk_count: int = 0
+    vector_error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
