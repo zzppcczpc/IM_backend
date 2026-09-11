@@ -53,7 +53,7 @@ async def block_scanners(request: Request, call_next):
 
 
 def create_routes():
-    from .routes import auth, chat, group_route, user_route, file_route, ai_route
+    from .routes import auth, chat, group_route, user_route, file_route, ai_route, knowledge_base_route
 
     app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
     app.include_router(chat.router, prefix="/api/chat", tags=["聊天"])
@@ -61,6 +61,11 @@ def create_routes():
     app.include_router(user_route.router, prefix="/api/user", tags=["用户"])
     app.include_router(file_route.router, prefix="/api/files", tags=["文件"])
     app.include_router(ai_route.router, prefix="/api/ai", tags=["AI"])
+    app.include_router(
+        knowledge_base_route.router,
+        prefix="/api/knowledge-bases",
+        tags=["知识库"],
+    )
 
 
 create_routes()
