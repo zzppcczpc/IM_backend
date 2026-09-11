@@ -8,10 +8,12 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
 
 from ..database import get_database
 from ..models.knowledge_base import KnowledgeBase
+from ..models.knowledge_base_chunk import KnowledgeBaseChunk
 from ..models.knowledge_base_file import KnowledgeBaseFile
 from ..models.user import User
 from ..schemas.knowledge_base import (
     KnowledgeBaseCreate,
+    KnowledgeBaseChunkResponse,
     KnowledgeBaseFileResponse,
     KnowledgeBaseResponse,
     KnowledgeBaseUpdate,
@@ -20,6 +22,7 @@ from ..config import settings
 from ..schemas.response import error, success
 from ..utils.auth import get_current_user
 from ..utils.knowledge_base_parser import parse_knowledge_base_file
+from ..utils.knowledge_base_chunker import split_text
 from ..utils.log import logger
 
 router = APIRouter()
@@ -50,7 +53,7 @@ def _file_response(document: dict) -> dict:
 
 
 async def _process_knowledge_base_file(file_id: str, db):
-    """后台解析文件，并把结果和状态写回 MongoDB。"""
+    """后台完成文件解析和文本切分，并把结果和状态写回 MongoDB。"""
     file_record = await db.knowledge_base_files.find_one({"id": file_id})
     if not file_record:
         return
@@ -66,6 +69,7 @@ async def _process_knowledge_base_file(file_id: str, db):
             },
         },
     )
+    await db.knowledge_base_chunks.delete_many({"file_id": file_id})
     try:
         text, metadata = parse_knowledge_base_file(
             file_record["local_file_path"],
@@ -75,9 +79,41 @@ async def _process_knowledge_base_file(file_id: str, db):
             {"id": file_id},
             {
                 "$set": {
-                    "status": "success",
+                    "status": "chunking",
                     "parsed_text": text,
                     "parse_metadata": metadata,
+                    "updated_at": datetime.now(),
+                },
+            },
+        )
+
+        chunks = split_text(text)
+        if not chunks:
+            raise ValueError("解析结果无法生成有效 Chunk")
+
+        now = datetime.now()
+        chunk_documents = [
+            KnowledgeBaseChunk(
+                knowledge_base_id=file_record["knowledge_base_id"],
+                file_id=file_id,
+                chunk_index=index,
+                content=chunk,
+                metadata={
+                    "filename": file_record["file_name"],
+                    "file_extension": file_record["file_extension"],
+                    **metadata,
+                },
+                created_at=now,
+            ).model_dump()
+            for index, chunk in enumerate(chunks)
+        ]
+        await db.knowledge_base_chunks.insert_many(chunk_documents)
+        await db.knowledge_base_files.update_one(
+            {"id": file_id},
+            {
+                "$set": {
+                    "status": "success",
+                    "chunk_count": len(chunk_documents),
                     "error_message": None,
                     "updated_at": datetime.now(),
                 },
@@ -91,6 +127,7 @@ async def _process_knowledge_base_file(file_id: str, db):
                 "$set": {
                     "status": "failed",
                     "error_message": str(exc)[:1000],
+                    "chunk_count": 0,
                     "updated_at": datetime.now(),
                 },
             },
@@ -364,5 +401,42 @@ async def get_knowledge_base_file(
     return success(
         message="文件状态读取成功",
         data=_file_response(file_record),
+    )
+
+
+@router.get(
+    "/{knowledge_base_id}/files/{file_id}/chunks",
+    description="查询知识库文件 Chunk",
+)
+async def list_knowledge_base_file_chunks(
+    knowledge_base_id: str,
+    file_id: str,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    document = await db.knowledge_bases.find_one({"id": knowledge_base_id})
+    if not document:
+        return error(code=404, message="知识库不存在")
+    if not _can_access(document, current_user.id):
+        return error(code=403, message="无权限访问该知识库")
+
+    file_record = await db.knowledge_base_files.find_one({
+        "id": file_id,
+        "knowledge_base_id": knowledge_base_id,
+    })
+    if not file_record:
+        return error(code=404, message="知识库文件不存在")
+
+    chunks = await db.knowledge_base_chunks.find(
+        {"file_id": file_id}
+    ).sort("chunk_index", 1).to_list(None)
+    return success(
+        message="Chunk列表读取成功",
+        data=[
+            KnowledgeBaseChunkResponse(**{
+                **{key: value for key, value in item.items() if key != "_id"},
+            }).model_dump()
+            for item in chunks
+        ],
     )
 

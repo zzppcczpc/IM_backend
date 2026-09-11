@@ -37,6 +37,17 @@ class KnowledgeBaseFileResponse(BaseModel):
     error_message: Optional[str] = None
     parsed_text: Optional[str] = None
     parse_metadata: dict = Field(default_factory=dict)
+    chunk_count: int = 0
     created_at: datetime
     updated_at: datetime
+
+
+class KnowledgeBaseChunkResponse(BaseModel):
+    id: str
+    knowledge_base_id: str
+    file_id: str
+    chunk_index: int
+    content: str
+    metadata: dict = Field(default_factory=dict)
+    created_at: datetime
 
