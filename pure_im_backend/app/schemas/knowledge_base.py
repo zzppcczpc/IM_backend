@@ -35,6 +35,8 @@ class KnowledgeBaseFileResponse(BaseModel):
     file_size: int
     status: str
     error_message: Optional[str] = None
+    parsed_text: Optional[str] = None
+    parse_metadata: dict = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 

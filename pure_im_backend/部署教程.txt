@@ -31,10 +31,17 @@ cd /d D:\Lenovo\桌面\IM\IM_backend\pure_im_backend
 # 4. 安装依赖
 python -m pip install -r requirements.txt
 
-# 如果启动或运行测试数据脚本时提示缺少 email-validator，补装该依赖
-python -m pip install email-validator
+# 如果启动或运行测试数据脚本时提示缺少 email-validator，补装该依赖：
+如果你使用的是 PowerShell，命令这样写：
+conda activate im-backend
+cd "D:\Lenovo\桌面\IM\IM_backend\pure_im_backend"
+python -m pip install -r requirements.txt
 
-# 说明：email-validator 已经写在 requirements.txt 中，完整执行上面的依赖安装后通常会自动安装。
+
+安装完成后，验证解析依赖：
+python -m pip check
+如果没有问题，会显示：
+No broken requirements found.
 
 
 步骤3：安装 Node.js：

@@ -20,6 +20,10 @@ email-validator>=2.0.0  # pydantic.EmailStr 依赖
 
 # 文件处理
 python-multipart>=0.0.6  # 文件上传
+pypdf>=5.0.0  # PDF文本解析
+python-docx>=1.1.0  # Word文档解析
+python-pptx>=1.0.0  # PowerPoint文档解析
+openpyxl>=3.1.0  # Excel文档解析
 
 # 工具
 jinja2>=3.1.0  # 模板渲染

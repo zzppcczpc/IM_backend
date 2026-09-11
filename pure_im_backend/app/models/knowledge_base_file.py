@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +26,8 @@ class KnowledgeBaseFile(BaseModel):
     local_file_path: str
     status: str = "uploaded"
     error_message: Optional[str] = None
+    parsed_text: Optional[str] = None
+    parse_metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 

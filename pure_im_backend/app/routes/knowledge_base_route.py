@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
 
 from ..database import get_database
 from ..models.knowledge_base import KnowledgeBase
@@ -19,6 +19,7 @@ from ..schemas.knowledge_base import (
 from ..config import settings
 from ..schemas.response import error, success
 from ..utils.auth import get_current_user
+from ..utils.knowledge_base_parser import parse_knowledge_base_file
 from ..utils.log import logger
 
 router = APIRouter()
@@ -46,6 +47,54 @@ def _knowledge_base_extensions() -> set[str]:
 def _file_response(document: dict) -> dict:
     document.pop("_id", None)
     return KnowledgeBaseFileResponse(**document).model_dump()
+
+
+async def _process_knowledge_base_file(file_id: str, db):
+    """后台解析文件，并把结果和状态写回 MongoDB。"""
+    file_record = await db.knowledge_base_files.find_one({"id": file_id})
+    if not file_record:
+        return
+
+    now = datetime.now()
+    await db.knowledge_base_files.update_one(
+        {"id": file_id},
+        {
+            "$set": {
+                "status": "parsing",
+                "error_message": None,
+                "updated_at": now,
+            },
+        },
+    )
+    try:
+        text, metadata = parse_knowledge_base_file(
+            file_record["local_file_path"],
+            file_record["file_extension"],
+        )
+        await db.knowledge_base_files.update_one(
+            {"id": file_id},
+            {
+                "$set": {
+                    "status": "success",
+                    "parsed_text": text,
+                    "parse_metadata": metadata,
+                    "error_message": None,
+                    "updated_at": datetime.now(),
+                },
+            },
+        )
+    except Exception as exc:
+        logger.error(f"知识库文件解析失败: {file_id}, {exc}", exc_info=True)
+        await db.knowledge_base_files.update_one(
+            {"id": file_id},
+            {
+                "$set": {
+                    "status": "failed",
+                    "error_message": str(exc)[:1000],
+                    "updated_at": datetime.now(),
+                },
+            },
+        )
 
 
 @router.post("", description="创建知识库")
@@ -171,6 +220,7 @@ async def delete_knowledge_base(
 async def upload_knowledge_base_file(
     knowledge_base_id: str,
     file: Annotated[UploadFile, File(...)],
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db=Depends(get_database),
 ):
@@ -228,6 +278,7 @@ async def upload_knowledge_base_file(
                 "$set": {"updated_at": now},
             },
         )
+        background_tasks.add_task(_process_knowledge_base_file, file_id, db)
         return success(
             message="文件上传成功",
             data=_file_response(file_record.model_dump()),
@@ -237,6 +288,37 @@ async def upload_knowledge_base_file(
             os.remove(local_file_path)
         logger.error(f"知识库文件上传失败: {exc}", exc_info=True)
         return error(code=500, message="知识库文件保存失败")
+
+
+@router.post(
+    "/{knowledge_base_id}/files/{file_id}/parse",
+    description="重新解析知识库文件",
+)
+async def parse_knowledge_base_file_route(
+    knowledge_base_id: str,
+    file_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    document = await db.knowledge_bases.find_one({"id": knowledge_base_id})
+    if not document:
+        return error(code=404, message="知识库不存在")
+    if not _can_access(document, current_user.id):
+        return error(code=403, message="无权限访问该知识库")
+
+    file_record = await db.knowledge_base_files.find_one({
+        "id": file_id,
+        "knowledge_base_id": knowledge_base_id,
+    })
+    if not file_record:
+        return error(code=404, message="知识库文件不存在")
+
+    background_tasks.add_task(_process_knowledge_base_file, file_id, db)
+    return success(
+        message="已提交文件解析任务",
+        data={"file_id": file_id, "status": "parsing"},
+    )
 
 
 @router.get("/{knowledge_base_id}/files", description="查询知识库文件")
