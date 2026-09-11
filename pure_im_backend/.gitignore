@@ -27,6 +27,7 @@ logs/
 # Uploaded/generated runtime assets
 uploads/
 static/uploads/
+volumes/
 tmp/
 temp/
 
@@ -41,4 +42,6 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+
 
