@@ -143,6 +143,29 @@ async def _generate_group_ai_reply(
             error_message=message,
         )
 
+    async def finish_stopped(latest_message: dict | None = None):
+        """读取用户主动停止后的最终消息，并记录调用日志。"""
+        nonlocal ai_message
+        if latest_message:
+            ai_message = Message(**latest_message)
+        elif ai_message:
+            saved_message = await group_collection.find_one({"id": ai_message.id})
+            if saved_message:
+                ai_message = Message(**saved_message)
+
+        if not ai_message:
+            return
+
+        await _record_group_ai_call_log(
+            user_id=user_id,
+            model_name=model_name,
+            success_flag=False,
+            started_at=started_at,
+            finished_at=datetime.now(),
+            usage=usage,
+            error_message="用户主动停止生成",
+        )
+
     try:
         ai_message = await MessageHandler.create_message(
             manage_db=manage_db,
@@ -179,6 +202,14 @@ async def _generate_group_ai_reply(
             message=user_message.content,
             config=platform_config,
         ):
+            latest = await group_collection.find_one(
+                {"id": ai_message.id},
+                {"stop": 1},
+            )
+            if latest and latest.get("stop"):
+                await finish_stopped()
+                return
+
             actual_model_name = chunk.get("model") or actual_model_name
             if chunk.get("usage"):
                 usage = chunk["usage"]
@@ -189,16 +220,30 @@ async def _generate_group_ai_reply(
 
             ai_message.content += delta
             ai_message.model_name = actual_model_name
-            await MessageHandler.update_message(
+            updated = await MessageHandler.update_streaming_message(
                 manage_db=manage_db,
                 group_collection=group_collection,
                 group_id=group_id,
                 message=ai_message,
             )
+            if not updated:
+                latest = await group_collection.find_one({"id": ai_message.id})
+                if latest and latest.get("stop"):
+                    await finish_stopped(latest)
+                    return
+                raise RuntimeError("AI消息更新失败")
             await safe_broadcast(ai_message)
     except Exception as exc:
         logger.error(f"群聊 AI 流式回复生成失败: {exc}", exc_info=True)
         await fail(str(exc) or "AI回复生成失败，请稍后重试")
+        return
+
+    latest = await group_collection.find_one(
+        {"id": ai_message.id},
+        {"stop": 1},
+    )
+    if latest and latest.get("stop"):
+        await finish_stopped()
         return
 
     ai_message.is_streaming = False
@@ -207,12 +252,19 @@ async def _generate_group_ai_reply(
         await fail("AI服务返回的回答内容为空")
         return
 
-    await MessageHandler.update_message(
+    updated = await MessageHandler.update_streaming_message(
         manage_db=manage_db,
         group_collection=group_collection,
         group_id=group_id,
         message=ai_message,
     )
+    if not updated:
+        latest = await group_collection.find_one({"id": ai_message.id})
+        if latest and latest.get("stop"):
+            await finish_stopped(latest)
+            return
+        await fail("AI消息更新失败")
+        return
     await safe_broadcast(ai_message)
 
     await _record_group_ai_call_log(
@@ -356,6 +408,21 @@ class MessageHandler:
             {"id": group_id, "last_message.id": message.id},
             {"$set": {"last_message": message_dict}},
         )
+
+    @staticmethod
+    async def update_streaming_message(manage_db, group_collection, group_id: str, message: Message):
+        """更新流式 AI 消息，但不会覆盖已经被用户停止的消息。"""
+        message_dict = message.model_dump()
+        result = await group_collection.update_one(
+            {"id": message.id, "stop": {"$ne": True}},
+            {"$set": message_dict},
+        )
+        if result.modified_count:
+            await manage_db.groups.update_one(
+                {"id": group_id, "last_message.id": message.id},
+                {"$set": {"last_message": message_dict}},
+            )
+        return bool(result.modified_count)
 
 
 async def broadcast_and_save_msg(
@@ -981,6 +1048,73 @@ async def websocket_endpoint(
 
 
 # ==================== HTTP接口 ====================
+
+@router.put("/stop")
+async def stop_ai_generation(
+    request_data: dict,
+    current_user: User = Depends(get_current_user),
+    manage_db=Depends(get_database),
+    chat_db=Depends(get_chat_database),
+):
+    """停止当前用户有权限访问的群聊中的流式 AI 消息。"""
+    group_id = request_data.get("group_id")
+    message_id = request_data.get("message_id")
+    if not group_id or not message_id:
+        return error(code=400, message="缺少group_id或message_id")
+
+    group = await manage_db.groups.find_one({
+        "id": group_id,
+        "is_dissolved": False,
+    })
+    if not group:
+        return error(code=404, message="群组不存在或已解散")
+    if current_user.id not in group.get("member_ids", []):
+        return error(code=403, message="你不在该群组中")
+
+    group_collection = getattr(chat_db, group_id)
+    message = await group_collection.find_one({
+        "id": message_id,
+        "group_id": group_id,
+        "is_AI": True,
+        "is_streaming": True,
+    })
+    if not message:
+        return error(code=404, message="AI消息不存在或已经结束生成")
+
+    result = await group_collection.update_one(
+        {
+            "id": message_id,
+            "group_id": group_id,
+            "is_AI": True,
+            "is_streaming": True,
+        },
+        {"$set": {"stop": True, "is_streaming": False}},
+    )
+    stopped_message = await group_collection.find_one({"id": message_id})
+    if not stopped_message:
+        return error(code=404, message="AI消息不存在")
+    if not result.modified_count and not stopped_message.get("stop"):
+        return error(code=404, message="AI消息已经结束生成")
+
+    await manage_db.groups.update_one(
+        {"id": group_id, "last_message.id": message_id},
+        {"$set": {"last_message": stopped_message}},
+    )
+    await MessageHandler.broadcast_to_group(
+        manage_db,
+        group_id,
+        Message(**stopped_message),
+    )
+
+    return success(
+        message="已停止生成",
+        data={
+            "message_id": message_id,
+            "stop": True,
+            "is_streaming": False,
+        },
+    )
+
 
 @router.get("/stats")
 async def get_stats(current_user: User = Depends(get_current_user)):
