@@ -66,6 +66,10 @@ class KnowledgeBaseSearchChunk(BaseModel):
     filename: str = ""
     content: str
     score: float
+    rrf_score: float = 0
+    retrieval: str = "hybrid"
+    retrieval_ranks: dict[str, int] = Field(default_factory=dict)
+    retrieval_scores: dict[str, float] = Field(default_factory=dict)
     metadata: dict = Field(default_factory=dict)
 
 

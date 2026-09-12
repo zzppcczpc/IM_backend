@@ -329,17 +329,21 @@ async def search_chat_history_qa_route(
     if not query:
         return error(code=400, message="检索问题不能为空")
 
+    qa_records = await manage_db.chat_history_qas.find({
+        "group_id": data.group_id,
+    }).sort("created_at", -1).to_list(None)
     try:
         from ..utils.chat_history_qa import search_chat_history_qa
 
         items = search_chat_history_qa(
             group_id=data.group_id,
             query=query,
+            qa_records=qa_records,
             top_k=data.top_k,
         )
     except Exception as exc:
         logger.error(f"聊天历史 QA 检索失败: {data.group_id}, {exc}", exc_info=True)
-        return error(code=503, message="聊天历史 QA 检索失败，请检查 Embedding 和 Milvus 状态")
+        return error(code=503, message="聊天历史 QA 检索失败")
 
     response = ChatHistoryQASearchResponse(query=query, items=items)
     return success(message="聊天历史 QA 检索成功", data=response.model_dump())

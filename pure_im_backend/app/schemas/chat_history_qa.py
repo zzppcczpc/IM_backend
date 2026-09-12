@@ -15,6 +15,10 @@ class ChatHistoryQASearchItem(BaseModel):
     user_message_id: str
     ai_message_id: str
     score: float
+    rrf_score: float = 0
+    retrieval: str = "hybrid"
+    retrieval_ranks: dict[str, int] = Field(default_factory=dict)
+    retrieval_scores: dict[str, float] = Field(default_factory=dict)
 
 
 class ChatHistoryQASearchResponse(BaseModel):

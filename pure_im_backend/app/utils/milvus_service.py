@@ -318,6 +318,38 @@ class MilvusService:
                 pass
         return self._merge_search_hits(hits, top_k)
 
+    def search_chat_history_qa_dense(
+        self,
+        *,
+        group_id: str,
+        dense_vector: list[float],
+        top_k: int = 20,
+    ) -> list[dict]:
+        """只执行聊天历史 QA 的 Dense 检索，供需求21参与 RRF。"""
+        collection_name = settings.MILVUS_CHAT_HISTORY_QA_COLLECTION
+        client = self.get_client()
+        if not client.has_collection(collection_name):
+            return []
+
+        self._ensure_chat_history_qa_indexes(client, collection_name)
+        client.load_collection(collection_name)
+        hits = self._search_dense_chunks(
+            client=client,
+            collection_name=collection_name,
+            dense_vector=dense_vector,
+            filter_expr=f'group_id == "{group_id}"',
+            output_fields=[
+                "qa_id",
+                "group_id",
+                "question",
+                "answer",
+                "user_message_id",
+                "ai_message_id",
+            ],
+            top_k=top_k,
+        )
+        return self._merge_search_hits(hits, top_k)
+
     def search_file_chunks(
         self,
         *,
@@ -368,6 +400,38 @@ class MilvusService:
                 # sparse 检索失败时保留 dense 检索结果，保证接口可用。
                 pass
 
+        return self._merge_search_hits(hits, top_k)
+
+    def search_file_chunks_dense(
+        self,
+        *,
+        knowledge_base_id: str,
+        dense_vector: list[float],
+        top_k: int = 20,
+    ) -> list[dict]:
+        """只执行知识库 Chunk 的 Dense 检索，供需求21参与 RRF。"""
+        client = self.get_client()
+        collection_name = settings.MILVUS_FILE_CHUNKS_COLLECTION
+        if not client.has_collection(collection_name):
+            raise RuntimeError("file_chunks 集合不存在，请先初始化并完成 Chunk 向量化")
+
+        self._ensure_file_chunk_indexes(client, collection_name)
+        client.load_collection(collection_name)
+        hits = self._search_dense_chunks(
+            client=client,
+            collection_name=collection_name,
+            dense_vector=dense_vector,
+            filter_expr=f'knowledge_base_id == "{knowledge_base_id}"',
+            output_fields=[
+                "id",
+                "knowledge_base_id",
+                "file_id",
+                "chunk_index",
+                "content",
+                "metadata_json",
+            ],
+            top_k=top_k,
+        )
         return self._merge_search_hits(hits, top_k)
 
     @staticmethod

@@ -284,15 +284,19 @@ async def search_knowledge_base(
     if not query:
         return error(code=400, message="检索问题不能为空")
 
+    chunks = await db.knowledge_base_chunks.find({
+        "knowledge_base_id": knowledge_base_id,
+    }).to_list(None)
     try:
         chunks = search_knowledge_base_chunks(
             knowledge_base_id=knowledge_base_id,
             query=query,
+            chunks=chunks,
             top_k=data.top_k,
         )
     except Exception as exc:
         logger.error(f"知识库检索失败: {knowledge_base_id}, {exc}", exc_info=True)
-        return error(code=503, message="知识库检索失败，请检查 Embedding 和 Milvus 状态")
+        return error(code=503, message="知识库检索失败")
 
     response = KnowledgeBaseSearchResponse(query=query, chunks=chunks)
     return success(message="检索成功", data=response.model_dump())

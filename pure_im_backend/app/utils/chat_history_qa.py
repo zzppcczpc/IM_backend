@@ -1,4 +1,6 @@
+from .bm25 import BM25Index
 from .embedding_service import embedding_service
+from .hybrid_search import rrf_fuse
 from .milvus_service import milvus_service
 
 
@@ -32,27 +34,92 @@ def search_chat_history_qa(
     *,
     group_id: str,
     query: str,
+    qa_records: list[dict],
     top_k: int = 5,
+    rrf_k: int = 60,
 ) -> list[dict]:
-    """将问题向量化，只检索指定群聊的历史 QA。"""
-    embedding = embedding_service.encode([query.strip()])[0]
-    hits = milvus_service.search_chat_history_qa(
-        group_id=group_id,
-        dense_vector=embedding.dense,
-        sparse_vector=embedding.sparse,
-        top_k=top_k,
-    )
+    """使用 BM25 + Dense，并通过 RRF 融合群聊历史 QA。"""
+    documents = [
+        {
+            "qa_id": qa["qa_id"],
+            "group_id": qa["group_id"],
+            "question": qa.get("question", ""),
+            "answer": qa.get("answer", ""),
+            "user_message_id": qa["user_message_id"],
+            "ai_message_id": qa["ai_message_id"],
+        }
+        for qa in qa_records
+    ]
+    bm25_documents = [
+        {
+            **document,
+            "content": document["question"],
+        }
+        for document in documents
+    ]
+    bm25_hits = BM25Index(
+        bm25_documents,
+        id_field="qa_id",
+        text_field="content",
+    ).search(query, top_k=max(top_k * 4, 20))
+    bm25_results = [
+        {
+            "id": hit["id"],
+            "type": "chat_history",
+            "question": hit["document"]["question"],
+            "answer": hit["document"]["answer"],
+            "group_id": hit["document"]["group_id"],
+            "user_message_id": hit["document"]["user_message_id"],
+            "ai_message_id": hit["document"]["ai_message_id"],
+            "content": hit["document"]["answer"],
+            "score": hit["score"],
+        }
+        for hit in bm25_hits
+    ]
 
-    items = []
-    for hit in hits:
-        entity = hit.get("entity") or {}
-        items.append({
-            "qa_id": entity.get("qa_id", ""),
-            "group_id": entity.get("group_id", group_id),
-            "question": entity.get("question", ""),
-            "answer": entity.get("answer", ""),
-            "user_message_id": entity.get("user_message_id", ""),
-            "ai_message_id": entity.get("ai_message_id", ""),
-            "score": hit.get("score", 0),
-        })
-    return items
+    dense_results = []
+    try:
+        query_embedding = embedding_service.encode([query])[0]
+        hits = milvus_service.search_chat_history_qa_dense(
+            group_id=group_id,
+            dense_vector=query_embedding.dense,
+            top_k=max(top_k * 4, 20),
+        )
+        for hit in hits:
+            entity = hit["entity"]
+            dense_results.append({
+                "id": entity.get("qa_id", ""),
+                "type": "chat_history",
+                "question": entity.get("question", ""),
+                "answer": entity.get("answer", ""),
+                "group_id": entity.get("group_id", group_id),
+                "user_message_id": entity.get("user_message_id", ""),
+                "ai_message_id": entity.get("ai_message_id", ""),
+                "content": entity.get("answer", ""),
+                "score": hit["score"],
+            })
+    except Exception:
+        dense_results = []
+
+    fused = rrf_fuse(
+        bm25_results=bm25_results,
+        dense_results=dense_results,
+        top_k=top_k,
+        rrf_k=rrf_k,
+    )
+    return [
+        {
+            "qa_id": item["id"],
+            "group_id": item.get("group_id", group_id),
+            "question": item.get("question", ""),
+            "answer": item.get("answer", ""),
+            "user_message_id": item.get("user_message_id", ""),
+            "ai_message_id": item.get("ai_message_id", ""),
+            "score": item["score"],
+            "rrf_score": item["rrf_score"],
+            "retrieval": item["retrieval"],
+            "retrieval_ranks": item["retrieval_ranks"],
+            "retrieval_scores": item["retrieval_scores"],
+        }
+        for item in fused
+    ]
