@@ -2,7 +2,7 @@ from ..config import settings
 
 
 class MilvusService:
-    """Milvus 连接和 file_chunks 集合初始化能力。"""
+    """Milvus 连接、知识库 Chunk 和聊天历史 QA 向量能力。"""
 
     def __init__(self):
         self._client = None
@@ -156,6 +156,168 @@ class MilvusService:
             "ids": result.get("ids", []),
         }
 
+    def ensure_chat_history_qa_collection(self, dense_dimension: int) -> dict:
+        """创建聊天历史 QA 的独立向量集合。"""
+        if dense_dimension <= 0:
+            raise ValueError("dense 向量维度必须大于 0")
+
+        try:
+            from pymilvus import DataType
+        except ImportError as exc:
+            raise RuntimeError(
+                "未安装 pymilvus，请先安装 requirements.txt 中的向量化依赖"
+            ) from exc
+
+        client = self.get_client()
+        collection_name = settings.MILVUS_CHAT_HISTORY_QA_COLLECTION
+        if client.has_collection(collection_name):
+            self._ensure_chat_history_qa_indexes(client, collection_name)
+            return {
+                "collection": collection_name,
+                "created": False,
+                "dense_dimension": dense_dimension,
+            }
+
+        schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema.add_field(
+            field_name="qa_id",
+            datatype=DataType.VARCHAR,
+            is_primary=True,
+            max_length=100,
+        )
+        schema.add_field(field_name="group_id", datatype=DataType.VARCHAR, max_length=100)
+        schema.add_field(field_name="question", datatype=DataType.VARCHAR, max_length=65535)
+        schema.add_field(field_name="answer", datatype=DataType.VARCHAR, max_length=65535)
+        schema.add_field(
+            field_name="user_message_id",
+            datatype=DataType.VARCHAR,
+            max_length=100,
+        )
+        schema.add_field(
+            field_name="ai_message_id",
+            datatype=DataType.VARCHAR,
+            max_length=100,
+        )
+        schema.add_field(
+            field_name="dense_vector",
+            datatype=DataType.FLOAT_VECTOR,
+            dim=dense_dimension,
+        )
+        schema.add_field(
+            field_name="sparse_vector",
+            datatype=DataType.SPARSE_FLOAT_VECTOR,
+        )
+
+        index_params = client.prepare_index_params()
+        index_params.add_index(
+            field_name="dense_vector",
+            index_type="AUTOINDEX",
+            metric_type="COSINE",
+        )
+        index_params.add_index(
+            field_name="sparse_vector",
+            index_type="AUTOINDEX",
+            metric_type="IP",
+        )
+        client.create_collection(
+            collection_name=collection_name,
+            schema=schema,
+            index_params=index_params,
+        )
+        return {
+            "collection": collection_name,
+            "created": True,
+            "dense_dimension": dense_dimension,
+        }
+
+    @staticmethod
+    def _ensure_chat_history_qa_indexes(client, collection_name: str):
+        dense_indexes = client.list_indexes(collection_name, "dense_vector")
+        if not dense_indexes:
+            index_params = client.prepare_index_params()
+            index_params.add_index(
+                field_name="dense_vector",
+                index_type="AUTOINDEX",
+                metric_type="COSINE",
+            )
+            client.create_index(collection_name, index_params)
+
+        sparse_indexes = client.list_indexes(collection_name, "sparse_vector")
+        if not sparse_indexes:
+            index_params = client.prepare_index_params()
+            index_params.add_index(
+                field_name="sparse_vector",
+                index_type="AUTOINDEX",
+                metric_type="IP",
+            )
+            client.create_index(collection_name, index_params)
+
+    def delete_chat_history_qa(self, qa_id: str):
+        self.get_client().delete(
+            collection_name=settings.MILVUS_CHAT_HISTORY_QA_COLLECTION,
+            filter=f'qa_id == "{qa_id}"',
+        )
+
+    def insert_chat_history_qa(self, records: list[dict]):
+        if not records:
+            return {"inserted": 0}
+        result = self.get_client().insert(
+            collection_name=settings.MILVUS_CHAT_HISTORY_QA_COLLECTION,
+            data=records,
+        )
+        return {
+            "inserted": result.get("insert_count", len(records)),
+            "ids": result.get("ids", []),
+        }
+
+    def search_chat_history_qa(
+        self,
+        *,
+        group_id: str,
+        dense_vector: list[float],
+        sparse_vector: dict[int, float] | None = None,
+        top_k: int = 5,
+    ) -> list[dict]:
+        collection_name = settings.MILVUS_CHAT_HISTORY_QA_COLLECTION
+        client = self.get_client()
+        if not client.has_collection(collection_name):
+            return []
+
+        self._ensure_chat_history_qa_indexes(client, collection_name)
+        client.load_collection(collection_name)
+        filter_expr = f'group_id == "{group_id}"'
+        output_fields = [
+            "qa_id",
+            "group_id",
+            "question",
+            "answer",
+            "user_message_id",
+            "ai_message_id",
+        ]
+        hits = self._search_dense_chunks(
+            client=client,
+            collection_name=collection_name,
+            dense_vector=dense_vector,
+            filter_expr=filter_expr,
+            output_fields=output_fields,
+            top_k=top_k,
+        )
+        if sparse_vector:
+            try:
+                hits.extend(
+                    self._search_sparse_chunks(
+                        client=client,
+                        collection_name=collection_name,
+                        sparse_vector=sparse_vector,
+                        filter_expr=filter_expr,
+                        output_fields=output_fields,
+                        top_k=top_k,
+                    )
+                )
+            except Exception:
+                pass
+        return self._merge_search_hits(hits, top_k)
+
     def search_file_chunks(
         self,
         *,
@@ -257,7 +419,12 @@ class MilvusService:
         merged = {}
         for hit in hits:
             entity = hit.get("entity") or {}
-            chunk_id = entity.get("id") or hit.get("id")
+            chunk_id = (
+                entity.get("id")
+                or entity.get("qa_id")
+                or hit.get("id")
+                or hit.get("qa_id")
+            )
             if not chunk_id:
                 continue
             """

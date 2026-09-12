@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from ..database import get_chat_database, get_database
 from ..models.user import User
 from ..models.message import Message
+from ..models.chat_history_qa import ChatHistoryQA
 from ..models.user_cleared_group import UserClearedGroup  # 用户清空会话消息模型
 from ..utils.auth import get_current_user
 from ..utils.group_mute import can_send_group_message
@@ -16,6 +17,10 @@ from ..utils.log import logger
 from ..utils.message_query import build_message_query
 from ..utils.ai_service import ai_service
 from ..schemas.response import error, success
+from ..schemas.chat_history_qa import (
+    ChatHistoryQASearchRequest,
+    ChatHistoryQASearchResponse,
+)
 
 router = APIRouter()
 
@@ -275,6 +280,21 @@ async def _generate_group_ai_reply(
         finished_at=datetime.now(),
         usage=usage,
     )
+    qa = ChatHistoryQA(
+        group_id=group_id,
+        question=user_message.content,
+        answer=ai_message.content,
+        user_message_id=user_message.id,
+        ai_message_id=ai_message.id,
+    )
+    try:
+        await manage_db.chat_history_qas.insert_one(qa.model_dump())
+        from ..utils.chat_history_qa import vectorize_and_store_chat_history_qa
+
+        vectorize_and_store_chat_history_qa(qa.model_dump())
+    except Exception as exc:
+        logger.error(f"聊天历史 QA 保存或向量化失败: {qa.qa_id}, {exc}", exc_info=True)
+
     await connection_manager.send_to_user(
         user_id,
         {
@@ -288,6 +308,41 @@ async def _generate_group_ai_reply(
             },
         },
     )
+
+
+@router.post("/history-qa/search", description="检索当前群聊历史 AI 问答")
+async def search_chat_history_qa_route(
+    data: ChatHistoryQASearchRequest,
+    current_user: User = Depends(get_current_user),
+    manage_db=Depends(get_database),
+):
+    group = await manage_db.groups.find_one({
+        "id": data.group_id,
+        "is_dissolved": False,
+    })
+    if not group:
+        return error(code=404, message="群组不存在或已解散")
+    if current_user.id not in group.get("member_ids", []):
+        return error(code=403, message="你不在该群组中")
+
+    query = data.query.strip()
+    if not query:
+        return error(code=400, message="检索问题不能为空")
+
+    try:
+        from ..utils.chat_history_qa import search_chat_history_qa
+
+        items = search_chat_history_qa(
+            group_id=data.group_id,
+            query=query,
+            top_k=data.top_k,
+        )
+    except Exception as exc:
+        logger.error(f"聊天历史 QA 检索失败: {data.group_id}, {exc}", exc_info=True)
+        return error(code=503, message="聊天历史 QA 检索失败，请检查 Embedding 和 Milvus 状态")
+
+    response = ChatHistoryQASearchResponse(query=query, items=items)
+    return success(message="聊天历史 QA 检索成功", data=response.model_dump())
 
 
 class MessageHandler:

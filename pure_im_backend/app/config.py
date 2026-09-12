@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     MILVUS_TOKEN: str = ""
     MILVUS_DB_NAME: str = "default"
     MILVUS_FILE_CHUNKS_COLLECTION: str = "file_chunks"
+    MILVUS_CHAT_HISTORY_QA_COLLECTION: str = "chat_history_qa"
     MILVUS_CONNECT_TIMEOUT: float = 5.0
 
     SMTP_SERVER: str = ""

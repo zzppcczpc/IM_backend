@@ -3,7 +3,9 @@ Pure IM 启动教程
 # 0.打开Docker Desktop
 
 # 1. 启动MongoDB (在PowerShell执行)
-docker start im-mongodb
+cd D:\Lenovo\桌面\IM\IM_backend\pure_im_backend
+docker compose up -d
+
 
 # 2. 进入项目目录并激活环境 (在Anaconda Prompt执行)
 cd  D:\Lenovo\桌面\IM\IM_backend\pure_im_backend
