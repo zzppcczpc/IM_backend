@@ -16,6 +16,8 @@ from ..schemas.knowledge_base import (
     KnowledgeBaseChunkResponse,
     KnowledgeBaseFileResponse,
     KnowledgeBaseResponse,
+    KnowledgeBaseSearchRequest,
+    KnowledgeBaseSearchResponse,
     KnowledgeBaseUpdate,
 )
 from ..config import settings
@@ -23,6 +25,7 @@ from ..schemas.response import error, success
 from ..utils.auth import get_current_user
 from ..utils.knowledge_base_parser import parse_knowledge_base_file
 from ..utils.knowledge_base_chunker import split_text
+from ..utils.knowledge_base_searcher import search_knowledge_base_chunks
 from ..utils.knowledge_base_vectorizer import vectorize_and_store_file_chunks
 from ..utils.log import logger
 
@@ -262,6 +265,37 @@ async def get_knowledge_base(
     if not _can_access(document, current_user.id):
         return error(code=403, message="无权限访问该知识库")
     return success(message="知识库详情读取成功", data=_to_response(document))
+
+
+@router.post("/{knowledge_base_id}/search", description="检索知识库文档 Chunk")
+async def search_knowledge_base(
+    knowledge_base_id: str,
+    data: KnowledgeBaseSearchRequest,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    document = await db.knowledge_bases.find_one({"id": knowledge_base_id})
+    if not document:
+        return error(code=404, message="知识库不存在")
+    if not _can_access(document, current_user.id):
+        return error(code=403, message="无权限访问该知识库")
+
+    query = data.query.strip()
+    if not query:
+        return error(code=400, message="检索问题不能为空")
+
+    try:
+        chunks = search_knowledge_base_chunks(
+            knowledge_base_id=knowledge_base_id,
+            query=query,
+            top_k=data.top_k,
+        )
+    except Exception as exc:
+        logger.error(f"知识库检索失败: {knowledge_base_id}, {exc}", exc_info=True)
+        return error(code=503, message="知识库检索失败，请检查 Embedding 和 Milvus 状态")
+
+    response = KnowledgeBaseSearchResponse(query=query, chunks=chunks)
+    return success(message="检索成功", data=response.model_dump())
 
 
 @router.put("/{knowledge_base_id}", description="修改知识库")

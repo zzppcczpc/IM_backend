@@ -156,5 +156,120 @@ class MilvusService:
             "ids": result.get("ids", []),
         }
 
+    def search_file_chunks(
+        self,
+        *,
+        knowledge_base_id: str,
+        dense_vector: list[float],
+        sparse_vector: dict[int, float] | None = None,
+        top_k: int = 5,
+    ) -> list[dict]:
+        """在 file_chunks 集合中按知识库范围检索相关 Chunk。"""
+        client = self.get_client()
+        collection_name = settings.MILVUS_FILE_CHUNKS_COLLECTION
+        if not client.has_collection(collection_name):
+            raise RuntimeError("file_chunks 集合不存在，请先初始化并完成 Chunk 向量化")
+
+        self._ensure_file_chunk_indexes(client, collection_name)
+        client.load_collection(collection_name)
+        filter_expr = f'knowledge_base_id == "{knowledge_base_id}"'
+        output_fields = [
+            "id",
+            "knowledge_base_id",
+            "file_id",
+            "chunk_index",
+            "content",
+            "metadata_json",
+        ]
+
+        hits = self._search_dense_chunks(
+            client=client,
+            collection_name=collection_name,
+            dense_vector=dense_vector,
+            filter_expr=filter_expr,
+            output_fields=output_fields,
+            top_k=top_k,
+        )
+        if sparse_vector:
+            try:
+                hits.extend(
+                    self._search_sparse_chunks(
+                        client=client,
+                        collection_name=collection_name,
+                        sparse_vector=sparse_vector,
+                        filter_expr=filter_expr,
+                        output_fields=output_fields,
+                        top_k=top_k,
+                    )
+                )
+            except Exception:
+                # sparse 检索失败时保留 dense 检索结果，保证接口可用。
+                pass
+
+        return self._merge_search_hits(hits, top_k)
+
+    @staticmethod
+    def _search_dense_chunks(
+        *,
+        client,
+        collection_name: str,
+        dense_vector: list[float],
+        filter_expr: str,
+        output_fields: list[str],
+        top_k: int,
+    ) -> list[dict]:
+        results = client.search(
+            collection_name=collection_name,
+            data=[dense_vector],
+            anns_field="dense_vector",
+            filter=filter_expr,
+            limit=top_k,
+            output_fields=output_fields,
+            search_params={"metric_type": "COSINE"},
+        )
+        return results[0] if results else []
+
+    @staticmethod
+    def _search_sparse_chunks(
+        *,
+        client,
+        collection_name: str,
+        sparse_vector: dict[int, float],
+        filter_expr: str,
+        output_fields: list[str],
+        top_k: int,
+    ) -> list[dict]:
+        results = client.search(
+            collection_name=collection_name,
+            data=[sparse_vector],
+            anns_field="sparse_vector",
+            filter=filter_expr,
+            limit=top_k,
+            output_fields=output_fields,
+            search_params={"metric_type": "IP"},
+        )
+        return results[0] if results else []
+
+    @staticmethod
+    #接收多个检索结果，把重复的 Chunk 合并去重，按照相似度排序，最后返回前 top_k 条。
+    #理解这个的核心就要了解hits里是长什么样子
+    def _merge_search_hits(hits: list[dict], top_k: int) -> list[dict]:
+        merged = {}
+        for hit in hits:
+            entity = hit.get("entity") or {}
+            chunk_id = entity.get("id") or hit.get("id")
+            if not chunk_id:
+                continue
+            """
+            1. 优先读取 hit["distance"]
+            2. 如果没有 distance，就读取 hit["score"]
+            3. 如果两个字段都没有，就使用 0
+            """
+            score = float(hit.get("distance", hit.get("score", 0)) or 0)
+            current = merged.get(chunk_id)
+            if current is None or score > current["score"]:
+                merged[chunk_id] = {"score": score, "entity": entity}
+        return sorted(merged.values(), key=lambda item: item["score"], reverse=True)[:top_k]
+
 
 milvus_service = MilvusService()

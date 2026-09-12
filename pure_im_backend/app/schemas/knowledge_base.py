@@ -52,3 +52,24 @@ class KnowledgeBaseChunkResponse(BaseModel):
     metadata: dict = Field(default_factory=dict)
     created_at: datetime
 
+
+class KnowledgeBaseSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
+class KnowledgeBaseSearchChunk(BaseModel):
+    chunk_id: str
+    knowledge_base_id: str
+    file_id: str
+    chunk_index: int
+    filename: str = ""
+    content: str
+    score: float
+    metadata: dict = Field(default_factory=dict)
+
+
+class KnowledgeBaseSearchResponse(BaseModel):
+    query: str
+    chunks: list[KnowledgeBaseSearchChunk] = Field(default_factory=list)
+
