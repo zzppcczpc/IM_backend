@@ -2,6 +2,7 @@ from .bm25 import BM25Index
 from .embedding_service import embedding_service
 from .hybrid_search import rrf_fuse
 from .milvus_service import milvus_service
+from .reranker_service import reranker_service
 
 
 def search_knowledge_base_chunks(
@@ -71,6 +72,11 @@ def search_knowledge_base_chunks(
         top_k=top_k,
         rrf_k=rrf_k,
     )
+    fused, reranker_used = reranker_service.rerank(
+        query=query,
+        candidates=fused,
+        top_n=top_k,
+    )
     return [
         {
             "chunk_id": item["id"],
@@ -87,6 +93,8 @@ def search_knowledge_base_chunks(
             "retrieval": item["retrieval"],
             "retrieval_ranks": item["retrieval_ranks"],
             "retrieval_scores": item["retrieval_scores"],
+            "rerank_score": item.get("rerank_score"),
+            "reranked": reranker_used,
             "metadata": item.get("metadata") or {},
         }
         for item in fused

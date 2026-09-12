@@ -2,6 +2,7 @@ from .bm25 import BM25Index
 from .embedding_service import embedding_service
 from .hybrid_search import rrf_fuse
 from .milvus_service import milvus_service
+from .reranker_service import reranker_service
 
 
 def build_chat_history_qa_vector_record(qa: dict, embedding) -> dict:
@@ -107,6 +108,16 @@ def search_chat_history_qa(
         top_k=top_k,
         rrf_k=rrf_k,
     )
+    for item in fused:
+        item["rerank_content"] = (
+            f"问题：{item.get('question', '')}\n"
+            f"答案：{item.get('answer', '')}"
+        )
+    fused, reranker_used = reranker_service.rerank(
+        query=query,
+        candidates=fused,
+        top_n=top_k,
+    )
     return [
         {
             "qa_id": item["id"],
@@ -120,6 +131,8 @@ def search_chat_history_qa(
             "retrieval": item["retrieval"],
             "retrieval_ranks": item["retrieval_ranks"],
             "retrieval_scores": item["retrieval_scores"],
+            "rerank_score": item.get("rerank_score"),
+            "reranked": reranker_used,
         }
         for item in fused
     ]

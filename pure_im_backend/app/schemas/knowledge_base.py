@@ -70,6 +70,8 @@ class KnowledgeBaseSearchChunk(BaseModel):
     retrieval: str = "hybrid"
     retrieval_ranks: dict[str, int] = Field(default_factory=dict)
     retrieval_scores: dict[str, float] = Field(default_factory=dict)
+    rerank_score: Optional[float] = None
+    reranked: bool = False
     metadata: dict = Field(default_factory=dict)
 
 

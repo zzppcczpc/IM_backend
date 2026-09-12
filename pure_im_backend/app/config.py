@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     BGE_M3_USE_FP16: bool = False
     EMBEDDING_BATCH_SIZE: int = 8
 
+    # 可选的 BGE Cross-Encoder 重排模型。
+    RERANKER_ENABLED: bool = True
+    RERANKER_MODEL_NAME: str = "BAAI/bge-reranker-v2-m3"
+    RERANKER_DEVICE: str = "auto"
+    RERANKER_USE_FP16: bool = False
+    RERANKER_QUERY_MAX_LENGTH: int = 256
+    RERANKER_PASSAGE_MAX_LENGTH: int = 512
+
     # Milvus 默认连接本机 Docker 暴露的 19530 端口。
     MILVUS_URI: str = "http://127.0.0.1:19530"
     MILVUS_TOKEN: str = ""
