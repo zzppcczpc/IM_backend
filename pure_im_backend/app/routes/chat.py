@@ -127,7 +127,7 @@ async def _generate_group_rag_reply(
     user_data: dict,
     user_message: Message,
 ):
-    """群聊知识库 RAG 非流式回复。"""
+    """群聊知识库 RAG 流式回复。"""
     started_at = datetime.now()
     group_id = group["id"]
     user_id = user_data["id"]
@@ -148,97 +148,6 @@ async def _generate_group_rag_reply(
         )
         prompt, citations = build_rag_prompt(user_message.content, chunks)
 
-        if not platform_config.configured:
-            message = "平台 AI 尚未完成配置，请联系管理员"
-            await _record_group_ai_call_log(
-                user_id=user_id,
-                model_name=model_name,
-                success_flag=False,
-                started_at=started_at,
-                finished_at=datetime.now(),
-                error_message=message,
-            )
-            await _send_ai_reply_error(
-                user_id=user_id,
-                group_id=group_id,
-                user_message_id=user_message.id,
-                error_message=message,
-            )
-            return
-
-        result = await ai_service.chat(
-            message=prompt,
-            config=platform_config,
-        )
-        if not result["ok"]:
-            await _record_group_ai_call_log(
-                user_id=user_id,
-                model_name=model_name,
-                success_flag=False,
-                started_at=started_at,
-                finished_at=datetime.now(),
-                error_message=result["error"],
-            )
-            await _send_ai_reply_error(
-                user_id=user_id,
-                group_id=group_id,
-                user_message_id=user_message.id,
-                error_message=result["error"],
-            )
-            return
-
-        response_data = result["data"]
-        answer = response_data.get("content", "").strip()
-        if not answer:
-            raise ValueError("AI服务返回的回答内容为空")
-
-        actual_model_name = response_data.get("model") or model_name
-        ai_message = await MessageHandler.create_message(
-            manage_db=manage_db,
-            chat_db=chat_db,
-            group_id=group_id,
-            sender_id="ai",
-            content=answer,
-            msg_type="text",
-            cite_id=user_message.id,
-            is_AI=True,
-            is_streaming=False,
-            model_id=actual_model_name,
-            model_name=actual_model_name,
-            ai_parent_message_id=user_message.id,
-            citations=citations,
-        )
-        if not ai_message:
-            raise RuntimeError("AI消息保存失败")
-
-        await MessageHandler.broadcast_to_group(manage_db, group_id, ai_message)
-        await _record_group_ai_call_log(
-            user_id=user_id,
-            model_name=actual_model_name,
-            success_flag=True,
-            started_at=started_at,
-            finished_at=datetime.now(),
-            usage=response_data.get("usage"),
-        )
-        await _save_group_chat_history_qa(
-            manage_db=manage_db,
-            group_id=group_id,
-            user_message=user_message,
-            ai_message=ai_message,
-        )
-        await connection_manager.send_to_user(
-            user_id,
-            {
-                "type": "ai_reply_success",
-                "group_id": group_id,
-                "content": {
-                    "user_message_id": user_message.id,
-                    "ai_message_id": ai_message.id,
-                    "group_id": group_id,
-                    "ai_content": ai_message.content,
-                },
-            },
-        )
     except Exception as exc:
         logger.error(f"群聊 RAG 回复生成失败: {exc}", exc_info=True)
         await _record_group_ai_call_log(
@@ -255,6 +164,18 @@ async def _generate_group_rag_reply(
             user_message_id=user_message.id,
             error_message=str(exc) or "RAG回复生成失败",
         )
+        return
+
+    # RAG 只负责准备上下文；消息创建、流式更新、广播、停止和收尾统一复用普通 AI 流程。
+    await _generate_group_ai_reply(
+        manage_db=manage_db,
+        chat_db=chat_db,
+        group=group,
+        user_data=user_data,
+        user_message=user_message,
+        prompt=prompt,
+        citations=citations,
+    )
 
 
 async def _generate_group_ai_reply(
@@ -264,8 +185,10 @@ async def _generate_group_ai_reply(
     group: dict,
     user_data: dict,
     user_message: Message,
+    prompt: str | None = None,
+    citations: list[dict] | None = None,
 ):
-    """群聊 AI 流式回复：先创建空消息，再持续增量更新同一条消息。"""
+    """群聊 AI 流式回复：普通问题和 RAG Prompt 共用同一套生命周期。"""
     started_at = datetime.now()
     group_id = group["id"]
     user_id = user_data["id"]
@@ -274,6 +197,8 @@ async def _generate_group_ai_reply(
     group_collection = getattr(chat_db, group_id)
     ai_message: Message | None = None
     usage = None
+    prompt = prompt or user_message.content
+    citations = citations or []
 
     async def safe_broadcast(message: Message):
         try:
@@ -347,6 +272,7 @@ async def _generate_group_ai_reply(
             model_id=model_name,
             model_name=model_name,
             ai_parent_message_id=user_message.id,
+            citations=citations,
         )
     except Exception as exc:
         logger.error(f"群聊 AI 消息保存失败: {exc}", exc_info=True)
@@ -366,7 +292,7 @@ async def _generate_group_ai_reply(
     actual_model_name = model_name
     try:
         async for chunk in ai_service.stream_chat(
-            message=user_message.content,
+            message=prompt,
             config=platform_config,
         ):
             latest = await group_collection.find_one(
@@ -931,7 +857,7 @@ async def websocket_endpoint(
                             }
                         })
 
-                        # 需求6。私聊暂不触发，避免改变原有私聊行为。
+                        # 群聊根据是否绑定知识库选择普通流式回复或 RAG 流式回复。
                         if data.get("trigger_ai") and group.get("type", "group") != "private":
                             from ..utils.rag_context import get_group_knowledge_base_ids
 
