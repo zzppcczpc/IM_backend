@@ -22,6 +22,8 @@ from ..schemas.group import (
     GroupCreateResponse,
     GroupDetailResponse,
     GroupInquiry,
+    GroupKnowledgeBaseResponse,
+    GroupKnowledgeBaseUpdate,
     GroupMembersWithRoleResponse,
     GroupMemberManage,
     GroupMemberRoleResponse,
@@ -89,6 +91,103 @@ def is_group_admin_or_owner(group: dict, user_id: str) -> bool:
     return (
         user_id == group.get("owner_id")
         or user_id in group.get("admin_ids", [])
+    )
+
+
+def _normalize_knowledge_base_ids(values) -> list[str]:
+    """清理知识库 ID，并保持用户提交的顺序。"""
+    if not isinstance(values, list):
+        return []
+
+    result = []
+    for value in values:
+        if isinstance(value, str):
+            value = value.strip()
+            if value and value not in result:
+                result.append(value)
+    return result
+
+
+def _build_knowledge_base_bindings(
+    group: dict,
+    knowledge_base_ids: list[str],
+    operator: User,
+) -> list[dict]:
+    """为绑定列表补齐绑定人信息，并保留已有绑定的原始记录。"""
+    existing = {}
+    for item in group.get("knowledge_base_bindings", []):
+        if isinstance(item, dict) and item.get("knowledge_base_id"):
+            existing[item["knowledge_base_id"]] = item
+
+    now = datetime.now()
+    bindings = []
+    for knowledge_base_id in knowledge_base_ids:
+        previous = existing.get(knowledge_base_id)
+        if previous:
+            bindings.append({
+                "knowledge_base_id": knowledge_base_id,
+                "bound_by": previous.get("bound_by", ""),
+                "bound_by_username": previous.get("bound_by_username", ""),
+                "bound_at": previous.get("bound_at"),
+            })
+        else:
+            bindings.append({
+                "knowledge_base_id": knowledge_base_id,
+                "bound_by": operator.id,
+                "bound_by_username": operator.username,
+                "bound_at": now,
+            })
+    return bindings
+
+
+async def _group_knowledge_base_response(db, group: dict) -> dict:
+    """构造群绑定知识库的公开信息，不返回知识库成员明细。"""
+    knowledge_base_ids = _normalize_knowledge_base_ids(
+        group.get("knowledge_base_ids", [])
+    )
+    binding_map = {
+        item.get("knowledge_base_id"): item
+        for item in group.get("knowledge_base_bindings", [])
+        if isinstance(item, dict) and item.get("knowledge_base_id")
+    }
+    documents = await db.knowledge_bases.find({
+        "id": {"$in": knowledge_base_ids},
+    }).to_list(None)
+    document_map = {document["id"]: document for document in documents}
+    knowledge_bases = []
+    for knowledge_base_id in knowledge_base_ids:
+        document = document_map.get(knowledge_base_id)
+        if not document:
+            continue
+        binding = binding_map.get(knowledge_base_id, {})
+        knowledge_bases.append({
+            "id": document["id"],
+            "name": document.get("name", ""),
+            "description": document.get("description", ""),
+            "owner_id": document.get("owner_id", ""),
+            "file_count": document.get("file_count", 0),
+            "bound_by": binding.get("bound_by", ""),
+            "bound_by_username": binding.get("bound_by_username", ""),
+            "bound_at": binding.get("bound_at"),
+        })
+    return GroupKnowledgeBaseResponse(
+        group_id=group["id"],
+        knowledge_base_ids=knowledge_base_ids,
+        knowledge_bases=knowledge_bases,
+    ).model_dump()
+
+
+async def _broadcast_group_knowledge_base_change(db, group: dict):
+    """绑定关系变化后通知群成员刷新本地群信息。"""
+    payload = await _group_knowledge_base_response(db, group)
+    await connection_dic.broadcast_to_group(
+        group["id"],
+        group.get("member_ids", []),
+        {
+            "type": "group_knowledge_bases_updated",
+            "group_id": group["id"],
+            "content": payload,
+        },
     )
 
 
@@ -1179,6 +1278,187 @@ async def delete_group_announcement(
     except Exception as e:
         logger.error(f"删除群公告出错: {e}")
         return error(code=500, message="删除群公告失败")
+
+
+@router.get("/{group_id}/knowledge-bases", description="查询群聊绑定的知识库")
+async def get_group_knowledge_bases(
+    group_id: str,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    group = await db.groups.find_one({
+        "id": group_id,
+        "is_dissolved": False,
+    })
+    if not group:
+        return error(code=404, message="群组不存在或已解散")
+    if current_user.id not in group.get("member_ids", []):
+        return error(code=403, message="你不在该群组中")
+
+    return success(
+        message="群聊知识库读取成功",
+        data=await _group_knowledge_base_response(db, group),
+    )
+
+
+@router.put("/{group_id}/knowledge-bases", description="替换群聊绑定的知识库")
+async def update_group_knowledge_bases(
+    group_id: str,
+    data: GroupKnowledgeBaseUpdate,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    group = await db.groups.find_one({
+        "id": group_id,
+        "is_dissolved": False,
+    })
+    if not group:
+        return error(code=404, message="群组不存在或已解散")
+    if group.get("type") == "private":
+        return error(code=400, message="私聊不能绑定知识库")
+    if not is_group_admin_or_owner(group, current_user.id):
+        return error(code=403, message="只有群主或管理员可以修改群知识库")
+
+    knowledge_base_ids = _normalize_knowledge_base_ids(data.knowledge_base_ids)
+    documents = await db.knowledge_bases.find({
+        "id": {"$in": knowledge_base_ids},
+    }).to_list(None)
+    document_map = {document["id"]: document for document in documents}
+    missing_ids = [
+        knowledge_base_id
+        for knowledge_base_id in knowledge_base_ids
+        if knowledge_base_id not in document_map
+    ]
+    if missing_ids:
+        return error(
+            code=404,
+            message=f"知识库不存在: {', '.join(missing_ids)}",
+        )
+
+    inaccessible_ids = [
+        knowledge_base_id
+        for knowledge_base_id in knowledge_base_ids
+        if (
+            current_user.id != document_map[knowledge_base_id].get("owner_id")
+            and current_user.id not in document_map[knowledge_base_id].get("member_ids", [])
+        )
+    ]
+    if inaccessible_ids:
+        return error(code=403, message="你没有绑定部分知识库的访问权限")
+
+    knowledge_base_bindings = _build_knowledge_base_bindings(
+        group,
+        knowledge_base_ids,
+        current_user,
+    )
+    await db.groups.update_one(
+        {"id": group_id},
+        {"$set": {
+            "knowledge_base_ids": knowledge_base_ids,
+            "knowledge_base_bindings": knowledge_base_bindings,
+        }},
+    )
+    updated_group = await db.groups.find_one({"id": group_id})
+    payload = await _group_knowledge_base_response(db, updated_group)
+    await _broadcast_group_knowledge_base_change(db, updated_group)
+    return success(message="群聊知识库绑定已更新", data=payload)
+
+
+@router.post(
+    "/{group_id}/knowledge-bases/{knowledge_base_id}",
+    description="绑定一个知识库到群聊",
+)
+async def bind_group_knowledge_base(
+    group_id: str,
+    knowledge_base_id: str,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    group = await db.groups.find_one({
+        "id": group_id,
+        "is_dissolved": False,
+    })
+    if not group:
+        return error(code=404, message="群组不存在或已解散")
+    if group.get("type") == "private":
+        return error(code=400, message="私聊不能绑定知识库")
+    if not is_group_admin_or_owner(group, current_user.id):
+        return error(code=403, message="只有群主或管理员可以绑定知识库")
+
+    knowledge_base = await db.knowledge_bases.find_one({"id": knowledge_base_id})
+    if not knowledge_base:
+        return error(code=404, message="知识库不存在")
+    if (
+        current_user.id != knowledge_base.get("owner_id")
+        and current_user.id not in knowledge_base.get("member_ids", [])
+    ):
+        return error(code=403, message="你没有访问该知识库的权限")
+
+    knowledge_base_ids = _normalize_knowledge_base_ids(
+        group.get("knowledge_base_ids", [])
+    )
+    if knowledge_base_id not in knowledge_base_ids:
+        knowledge_base_ids.append(knowledge_base_id)
+    knowledge_base_bindings = _build_knowledge_base_bindings(
+        group,
+        knowledge_base_ids,
+        current_user,
+    )
+    await db.groups.update_one(
+        {"id": group_id},
+        {"$set": {
+            "knowledge_base_ids": knowledge_base_ids,
+            "knowledge_base_bindings": knowledge_base_bindings,
+        }},
+    )
+    updated_group = await db.groups.find_one({"id": group_id})
+    payload = await _group_knowledge_base_response(db, updated_group)
+    await _broadcast_group_knowledge_base_change(db, updated_group)
+    return success(message="知识库已绑定到群聊", data=payload)
+
+
+@router.delete(
+    "/{group_id}/knowledge-bases/{knowledge_base_id}",
+    description="解绑一个群聊知识库",
+)
+async def unbind_group_knowledge_base(
+    group_id: str,
+    knowledge_base_id: str,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    group = await db.groups.find_one({
+        "id": group_id,
+        "is_dissolved": False,
+    })
+    if not group:
+        return error(code=404, message="群组不存在或已解散")
+    if not is_group_admin_or_owner(group, current_user.id):
+        return error(code=403, message="只有群主或管理员可以解绑知识库")
+
+    knowledge_base_ids = [
+        item
+        for item in _normalize_knowledge_base_ids(
+            group.get("knowledge_base_ids", [])
+        )
+        if item != knowledge_base_id
+    ]
+    knowledge_base_bindings = _build_knowledge_base_bindings(
+        group,
+        knowledge_base_ids,
+        current_user,
+    )
+    await db.groups.update_one(
+        {"id": group_id},
+        {"$set": {
+            "knowledge_base_ids": knowledge_base_ids,
+            "knowledge_base_bindings": knowledge_base_bindings,
+        }},
+    )
+    updated_group = await db.groups.find_one({"id": group_id})
+    payload = await _group_knowledge_base_response(db, updated_group)
+    await _broadcast_group_knowledge_base_change(db, updated_group)
+    return success(message="知识库已从群聊解绑", data=payload)
 
 
 @router.get("/{group_uuid}", description="查询群详情")

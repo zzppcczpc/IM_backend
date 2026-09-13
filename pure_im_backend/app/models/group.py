@@ -17,6 +17,10 @@ class Group(BaseModel):
     type: str = "group"  # group 或 private
     # Admins are a subset of member_ids. owner_id is still the only owner.
     admin_ids: List[str] = Field(default_factory=list)
+    # 群聊可绑定多个知识库；绑定后群成员可以在群聊 AI 中使用这些知识库。
+    knowledge_base_ids: List[str] = Field(default_factory=list)
+    # 每个绑定项记录绑定人和绑定时间，便于群成员查看来源。
+    knowledge_base_bindings: List[dict] = Field(default_factory=list)
 
     # 群公告直接嵌在群文档里：一个群对应一个公告列表，适合当前“公告数量不大”的场景。
     # 每条公告是 dict：id/content/created_by/created_at/updated_by/updated_at。

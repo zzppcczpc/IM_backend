@@ -360,6 +360,18 @@ async def delete_knowledge_base(
                 logger.warning(f"知识库文件清理失败: {path}, {exc}")
     await db.knowledge_base_files.delete_many({"knowledge_base_id": knowledge_base_id})
     await db.knowledge_base_chunks.delete_many({"knowledge_base_id": knowledge_base_id})
+    # 删除知识库时同步解除所有群聊绑定，避免群 RAG 继续读取已不存在的知识库 ID。
+    await db.groups.update_many(
+        {"knowledge_base_ids": knowledge_base_id},
+        {
+            "$pull": {
+                "knowledge_base_ids": knowledge_base_id,
+                "knowledge_base_bindings": {
+                    "knowledge_base_id": knowledge_base_id,
+                },
+            },
+        },
+    )
     await db.knowledge_bases.delete_one({"id": knowledge_base_id})
     return success(
         message="知识库删除成功",

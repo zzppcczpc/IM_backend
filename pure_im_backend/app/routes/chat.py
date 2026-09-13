@@ -95,6 +95,168 @@ async def _send_ai_reply_error(
     )
 
 
+async def _save_group_chat_history_qa(
+    *,
+    manage_db,
+    group_id: str,
+    user_message: Message,
+    ai_message: Message,
+):
+    """保存成功的群聊 AI 问答，供历史 QA 检索使用。"""
+    qa = ChatHistoryQA(
+        group_id=group_id,
+        question=user_message.content,
+        answer=ai_message.content,
+        user_message_id=user_message.id,
+        ai_message_id=ai_message.id,
+    )
+    try:
+        await manage_db.chat_history_qas.insert_one(qa.model_dump())
+        from ..utils.chat_history_qa import vectorize_and_store_chat_history_qa
+
+        vectorize_and_store_chat_history_qa(qa.model_dump())
+    except Exception as exc:
+        logger.error(f"聊天历史 QA 保存或向量化失败: {qa.qa_id}, {exc}", exc_info=True)
+
+
+async def _generate_group_rag_reply(
+    *,
+    manage_db,
+    chat_db,
+    group: dict,
+    user_data: dict,
+    user_message: Message,
+):
+    """群聊知识库 RAG 非流式回复。"""
+    started_at = datetime.now()
+    group_id = group["id"]
+    user_id = user_data["id"]
+    platform_config = ai_service.get_default_config()
+    model_name = platform_config.model_name
+
+    try:
+        from ..utils.rag_context import (
+            build_rag_prompt,
+            search_group_knowledge_base,
+        )
+
+        chunks = await search_group_knowledge_base(
+            manage_db=manage_db,
+            group=group,
+            query=user_message.content,
+            top_k=5,
+        )
+        prompt, citations = build_rag_prompt(user_message.content, chunks)
+
+        if not platform_config.configured:
+            message = "平台 AI 尚未完成配置，请联系管理员"
+            await _record_group_ai_call_log(
+                user_id=user_id,
+                model_name=model_name,
+                success_flag=False,
+                started_at=started_at,
+                finished_at=datetime.now(),
+                error_message=message,
+            )
+            await _send_ai_reply_error(
+                user_id=user_id,
+                group_id=group_id,
+                user_message_id=user_message.id,
+                error_message=message,
+            )
+            return
+
+        result = await ai_service.chat(
+            message=prompt,
+            config=platform_config,
+        )
+        if not result["ok"]:
+            await _record_group_ai_call_log(
+                user_id=user_id,
+                model_name=model_name,
+                success_flag=False,
+                started_at=started_at,
+                finished_at=datetime.now(),
+                error_message=result["error"],
+            )
+            await _send_ai_reply_error(
+                user_id=user_id,
+                group_id=group_id,
+                user_message_id=user_message.id,
+                error_message=result["error"],
+            )
+            return
+
+        response_data = result["data"]
+        answer = response_data.get("content", "").strip()
+        if not answer:
+            raise ValueError("AI服务返回的回答内容为空")
+
+        actual_model_name = response_data.get("model") or model_name
+        ai_message = await MessageHandler.create_message(
+            manage_db=manage_db,
+            chat_db=chat_db,
+            group_id=group_id,
+            sender_id="ai",
+            content=answer,
+            msg_type="text",
+            cite_id=user_message.id,
+            is_AI=True,
+            is_streaming=False,
+            model_id=actual_model_name,
+            model_name=actual_model_name,
+            ai_parent_message_id=user_message.id,
+            citations=citations,
+        )
+        if not ai_message:
+            raise RuntimeError("AI消息保存失败")
+
+        await MessageHandler.broadcast_to_group(manage_db, group_id, ai_message)
+        await _record_group_ai_call_log(
+            user_id=user_id,
+            model_name=actual_model_name,
+            success_flag=True,
+            started_at=started_at,
+            finished_at=datetime.now(),
+            usage=response_data.get("usage"),
+        )
+        await _save_group_chat_history_qa(
+            manage_db=manage_db,
+            group_id=group_id,
+            user_message=user_message,
+            ai_message=ai_message,
+        )
+        await connection_manager.send_to_user(
+            user_id,
+            {
+                "type": "ai_reply_success",
+                "group_id": group_id,
+                "content": {
+                    "user_message_id": user_message.id,
+                    "ai_message_id": ai_message.id,
+                    "group_id": group_id,
+                    "ai_content": ai_message.content,
+                },
+            },
+        )
+    except Exception as exc:
+        logger.error(f"群聊 RAG 回复生成失败: {exc}", exc_info=True)
+        await _record_group_ai_call_log(
+            user_id=user_id,
+            model_name=model_name,
+            success_flag=False,
+            started_at=started_at,
+            finished_at=datetime.now(),
+            error_message=str(exc) or "RAG回复生成失败",
+        )
+        await _send_ai_reply_error(
+            user_id=user_id,
+            group_id=group_id,
+            user_message_id=user_message.id,
+            error_message=str(exc) or "RAG回复生成失败",
+        )
+
+
 async def _generate_group_ai_reply(
     *,
     manage_db,
@@ -280,20 +442,12 @@ async def _generate_group_ai_reply(
         finished_at=datetime.now(),
         usage=usage,
     )
-    qa = ChatHistoryQA(
+    await _save_group_chat_history_qa(
+        manage_db=manage_db,
         group_id=group_id,
-        question=user_message.content,
-        answer=ai_message.content,
-        user_message_id=user_message.id,
-        ai_message_id=ai_message.id,
+        user_message=user_message,
+        ai_message=ai_message,
     )
-    try:
-        await manage_db.chat_history_qas.insert_one(qa.model_dump())
-        from ..utils.chat_history_qa import vectorize_and_store_chat_history_qa
-
-        vectorize_and_store_chat_history_qa(qa.model_dump())
-    except Exception as exc:
-        logger.error(f"聊天历史 QA 保存或向量化失败: {qa.qa_id}, {exc}", exc_info=True)
 
     await connection_manager.send_to_user(
         user_id,
@@ -777,18 +931,22 @@ async def websocket_endpoint(
                             }
                         })
 
-                        # 需求6：用户消息先入群，再异步触发一条非流式 AI 回复。
                         # 私聊暂不触发，避免改变原有私聊行为。
                         if data.get("trigger_ai") and group.get("type", "group") != "private":
-                            asyncio.create_task(
-                                _generate_group_ai_reply(
-                                    manage_db=manage_db,
-                                    chat_db=chat_db,
-                                    group=group,
-                                    user_data=user_data,
-                                    user_message=message,
-                                )
+                            from ..utils.rag_context import get_group_knowledge_base_ids
+
+                            reply_task = (
+                                _generate_group_rag_reply
+                                if get_group_knowledge_base_ids(group)
+                                else _generate_group_ai_reply
                             )
+                            asyncio.create_task(reply_task(
+                                manage_db=manage_db,
+                                chat_db=chat_db,
+                                group=group,
+                                user_data=user_data,
+                                user_message=message,
+                            ))
 
                 # 撤回消息
                 elif data.get("type") == "revoke":
