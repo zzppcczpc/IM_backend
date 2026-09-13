@@ -1364,6 +1364,7 @@ async def update_group_knowledge_bases(
     return success(message="群聊知识库绑定已更新", data=payload)
 
 
+# 绑定和解绑知识库到群聊的接口,只看这个先
 @router.post(
     "/{group_id}/knowledge-bases/{knowledge_base_id}",
     description="绑定一个知识库到群聊",

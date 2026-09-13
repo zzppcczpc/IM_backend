@@ -931,7 +931,7 @@ async def websocket_endpoint(
                             }
                         })
 
-                        # 私聊暂不触发，避免改变原有私聊行为。
+                        # 需求6。私聊暂不触发，避免改变原有私聊行为。
                         if data.get("trigger_ai") and group.get("type", "group") != "private":
                             from ..utils.rag_context import get_group_knowledge_base_ids
 

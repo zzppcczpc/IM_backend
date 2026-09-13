@@ -361,6 +361,7 @@ async def delete_knowledge_base(
     await db.knowledge_base_files.delete_many({"knowledge_base_id": knowledge_base_id})
     await db.knowledge_base_chunks.delete_many({"knowledge_base_id": knowledge_base_id})
     # 删除知识库时同步解除所有群聊绑定，避免群 RAG 继续读取已不存在的知识库 ID。
+    #$pull 是 MongoDB 更新数组字段的操作符，作用是：从数组中删除符合条件的元素。
     await db.groups.update_many(
         {"knowledge_base_ids": knowledge_base_id},
         {
