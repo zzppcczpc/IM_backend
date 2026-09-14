@@ -95,6 +95,26 @@ async def _send_ai_reply_error(
     )
 
 
+async def _cited_file_id(
+    *,
+    chat_db,
+    group_id: str,
+    cite_id: str | None,
+) -> str | None:
+    """读取引用消息，判断它是否为群文件消息。"""
+    if not cite_id:
+        return None
+
+    from ..utils.group_recent_files import get_message_file_id
+
+    group_collection = getattr(chat_db, group_id)
+    cited_message = await group_collection.find_one(
+        {"id": cite_id},
+        {"content": 1},
+    )
+    return get_message_file_id(cited_message)
+
+
 async def _save_group_chat_history_qa(
     *,
     manage_db,
@@ -126,8 +146,10 @@ async def _generate_group_rag_reply(
     group: dict,
     user_data: dict,
     user_message: Message,
+    use_knowledge_base: bool = False,
+    use_group_files: bool = False,
 ):
-    """群聊知识库 RAG 流式回复。"""
+    """按用户选择的资料范围生成群聊 RAG 流式回复。"""
     started_at = datetime.now()
     group_id = group["id"]
     user_id = user_data["id"]
@@ -139,14 +161,36 @@ async def _generate_group_rag_reply(
             build_rag_prompt,
             search_group_knowledge_base,
         )
+        from ..utils.group_file_vectorizer import search_group_file_context
 
-        chunks = await search_group_knowledge_base(
-            manage_db=manage_db,
-            group=group,
-            query=user_message.content,
-            top_k=5,
+        file_contexts = []
+        cited_file_id = await _cited_file_id(
+            chat_db=chat_db,
+            group_id=group_id,
+            cite_id=user_message.cite.get("id") if user_message.cite else None,
         )
-        prompt, citations = build_rag_prompt(user_message.content, chunks)
+        if use_group_files or cited_file_id:
+            file_contexts = await search_group_file_context(
+                group_id=group_id,
+                query=user_message.content,
+                user_message=user_message,
+                chat_db=chat_db,
+                include_group_files=use_group_files,
+            )
+
+        chunks = []
+        if use_knowledge_base:
+            chunks = await search_group_knowledge_base(
+                manage_db=manage_db,
+                group=group,
+                query=user_message.content,
+                top_k=5,
+            )
+        prompt, citations = build_rag_prompt(
+            user_message.content,
+            chunks,
+            file_contexts=file_contexts,
+        )
 
     except Exception as exc:
         logger.error(f"群聊 RAG 回复生成失败: {exc}", exc_info=True)
@@ -617,6 +661,22 @@ async def broadcast_and_save_msg(
 
     if save_message:
         group = await manage_db.groups.find_one({"id": group_id})
+        from ..utils.group_recent_files import record_recent_file
+
+        recent_files = await record_recent_file(manage_db, message)
+        if recent_files is not None:
+            await connection_manager.broadcast_to_group(
+                group_id,
+                group.get("member_ids", []) if group else [],
+                {
+                    "type": "recent_files_updated",
+                    "group_id": group_id,
+                    "content": {
+                        "group_id": group_id,
+                        "files": to_client_data(recent_files),
+                    },
+                },
+            )
         member_ids = broadcast_ids or (group.get("member_ids", []) if group else [])
         # 再通过 WebSocket 推给群成员；前端收到 type=audio/webm 后就会渲染语音播放器。
         await connection_manager.broadcast_to_group(
@@ -857,22 +917,38 @@ async def websocket_endpoint(
                             }
                         })
 
-                        # 群聊根据是否绑定知识库选择普通流式回复或 RAG 流式回复。
+                        # AI 开启资料开关，或引用文件时，进入按范围检索的 RAG 流程。
                         if data.get("trigger_ai") and group.get("type", "group") != "private":
-                            from ..utils.rag_context import get_group_knowledge_base_ids
-
+                            use_knowledge_base = bool(data.get("use_knowledge_base"))
+                            use_group_files = bool(data.get("use_group_files"))
+                            cited_file_id = await _cited_file_id(
+                                chat_db=chat_db,
+                                group_id=group_id,
+                                cite_id=data.get("cite"),
+                            )
+                            should_use_rag = (
+                                use_knowledge_base
+                                or use_group_files
+                                or bool(cited_file_id)
+                            )
                             reply_task = (
                                 _generate_group_rag_reply
-                                if get_group_knowledge_base_ids(group)
+                                if should_use_rag
                                 else _generate_group_ai_reply
                             )
-                            asyncio.create_task(reply_task(
-                                manage_db=manage_db,
-                                chat_db=chat_db,
-                                group=group,
-                                user_data=user_data,
-                                user_message=message,
-                            ))
+                            reply_kwargs = {
+                                "manage_db": manage_db,
+                                "chat_db": chat_db,
+                                "group": group,
+                                "user_data": user_data,
+                                "user_message": message,
+                            }
+                            if reply_task is _generate_group_rag_reply:
+                                reply_kwargs.update({
+                                    "use_knowledge_base": use_knowledge_base,
+                                    "use_group_files": use_group_files,
+                                })
+                            asyncio.create_task(reply_task(**reply_kwargs))
 
                 # 撤回消息
                 elif data.get("type") == "revoke":

@@ -1522,6 +1522,31 @@ async def get_group_by_uuid(
         return error(code=500, message="获取群详情出错")
 
 
+@router.get("/{group_id}/recent-files", description="查询群聊最近文件")
+async def get_group_recent_files(
+    group_id: str,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database),
+):
+    """返回群成员可见的最近文件元数据，不返回文件正文。"""
+    group = await db.groups.find_one({
+        "id": group_id,
+        "is_dissolved": False,
+    })
+    if not group:
+        return error(code=404, message="群组不存在或已解散")
+    if current_user.id not in group.get("member_ids", []):
+        return error(code=403, message="你不在该群组中")
+
+    return success(
+        message="群聊最近文件读取成功",
+        data={
+            "group_id": group_id,
+            "files": to_client_data(group.get("recent_files", [])),
+        },
+    )
+
+
 @router.put("/{group_uuid}", description="修改群信息")
 async def update_group(
     group_uuid: str,

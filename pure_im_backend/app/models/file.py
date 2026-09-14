@@ -15,6 +15,14 @@ class File(BaseModel):
     owner_id: str
     group_id: Optional[str] = None
     is_deleted: bool = False
+    # 群文件按需解析：第一次被 AI 使用时解析并缓存结果。
+    parse_status: str = "pending"
+    parsed_text: Optional[str] = None
+    parse_metadata: dict = Field(default_factory=dict)
+    parse_error: Optional[str] = None
+    parsed_at: Optional[datetime] = None
+    chunk_count: int = 0
+    vector_error: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now())
 
     class Config:

@@ -65,7 +65,18 @@ async def group_upload_media(
             "size": file.size,
         }
 
-        # 7. 先创建并广播一条聊天消息。
+        # 7. 先把真实文件写入 files 集合，再创建聊天消息。
+        # 这样最近文件记录可以同时拿到文件路径和消息 ID。
+        await save_file(
+            content,
+            current_user,
+            doc_uuid,
+            manage_db,
+            file_header,
+            None,
+            group_id,
+        )
+
         # 使用统一消息类型：image/audio/video/file
         from ..routes.chat import broadcast_and_save_msg
         message_type = get_message_type(file_header["content_type"])
@@ -97,16 +108,12 @@ async def group_upload_media(
             sender_id=current_user.id,
             duration=duration,
         )
-
-        # 8. 把真实音频文件保存到本地 uploads，并在 files 表里记录文件 ID、路径、类型等信息。
-        await save_file(
-            content,
-            current_user,
+        from ..utils.group_file_vectorizer import process_group_file
+        background_tasks.add_task(
+            process_group_file,
             doc_uuid,
-            manage_db,
-            file_header,
-            None,
             group_id,
+            manage_db,
         )
 
         return success(message="上传成功")
@@ -174,6 +181,13 @@ async def upload_file_to_group(
             type=message_type,
             group_id=group_id,
             sender_id=current_user.id,
+        )
+        from ..utils.group_file_vectorizer import process_group_file
+        background_tasks.add_task(
+            process_group_file,
+            doc_uuid,
+            group_id,
+            manage_db,
         )
 
         return success(message="上传成功")

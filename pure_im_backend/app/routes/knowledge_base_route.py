@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import uuid
@@ -284,14 +285,11 @@ async def search_knowledge_base(
     if not query:
         return error(code=400, message="检索问题不能为空")
 
-    chunks = await db.knowledge_base_chunks.find({
-        "knowledge_base_id": knowledge_base_id,
-    }).to_list(None)
     try:
-        chunks = search_knowledge_base_chunks(
+        chunks = await asyncio.to_thread(
+            search_knowledge_base_chunks,
             knowledge_base_id=knowledge_base_id,
             query=query,
-            chunks=chunks,
             top_k=data.top_k,
         )
     except Exception as exc:

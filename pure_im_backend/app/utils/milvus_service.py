@@ -353,9 +353,10 @@ class MilvusService:
     def search_file_chunks(
         self,
         *,
-        knowledge_base_id: str,
+        knowledge_base_id: str | list[str],
         dense_vector: list[float],
         sparse_vector: dict[int, float] | None = None,
+        file_id: str | None = None,
         top_k: int = 5,
     ) -> list[dict]:
         """在 file_chunks 集合中按知识库范围检索相关 Chunk。"""
@@ -366,7 +367,19 @@ class MilvusService:
 
         self._ensure_file_chunk_indexes(client, collection_name)
         client.load_collection(collection_name)
-        filter_expr = f'knowledge_base_id == "{knowledge_base_id}"'
+        if isinstance(knowledge_base_id, str):
+            filter_expr = f'knowledge_base_id == "{knowledge_base_id}"'
+        else:
+            ids = [
+                value for value in knowledge_base_id
+                if isinstance(value, str) and value.strip()
+            ]
+            if not ids:
+                return []
+            quoted_ids = ", ".join(f'"{value}"' for value in ids)
+            filter_expr = f"knowledge_base_id in [{quoted_ids}]"
+        if file_id:
+            filter_expr += f' and file_id == "{file_id}"'
         output_fields = [
             "id",
             "knowledge_base_id",

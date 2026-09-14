@@ -21,6 +21,8 @@ class Group(BaseModel):
     knowledge_base_ids: List[str] = Field(default_factory=list)
     # 每个绑定项记录绑定人和绑定时间，便于群成员查看来源。
     knowledge_base_bindings: List[dict] = Field(default_factory=list)
+    # 群聊最近上传的文件，按上传时间从旧到新保存，最多保留最近 10 条。
+    recent_files: List[dict] = Field(default_factory=list)
 
     # 群公告直接嵌在群文档里：一个群对应一个公告列表，适合当前“公告数量不大”的场景。
     # 每条公告是 dict：id/content/created_by/created_at/updated_by/updated_at。

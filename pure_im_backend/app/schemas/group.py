@@ -28,6 +28,7 @@ class GroupResponse(BaseModel):
     admin_ids: List[str] = Field(default_factory=list)
     knowledge_base_ids: List[str] = Field(default_factory=list)
     knowledge_base_bindings: List[dict] = Field(default_factory=list)
+    recent_files: List[dict] = Field(default_factory=list)
     # 群列表里先带上公告字段，前端刷新群列表时不会丢失已知公告状态。
     announcements: List[dict] = Field(default_factory=list)
     announcement_editor_ids: List[str] = Field(default_factory=list)
@@ -62,6 +63,7 @@ class GroupDetailResponse(BaseModel):
     admin_ids: List[str] = Field(default_factory=list)
     knowledge_base_ids: List[str] = Field(default_factory=list)
     knowledge_base_bindings: List[dict] = Field(default_factory=list)
+    recent_files: List[dict] = Field(default_factory=list)
     # 群详情会返回公告列表，打开群时前端可以直接拿到当前公告状态。
     announcements: List[dict] = Field(default_factory=list)
     announcement_editor_ids: List[str] = Field(default_factory=list)
