@@ -39,6 +39,10 @@ class KnowledgeBaseFileResponse(BaseModel):
     parse_metadata: dict = Field(default_factory=dict)
     chunk_count: int = 0
     vector_error_message: Optional[str] = None
+    extraction_type: Optional[str] = None
+    extraction_status: str = "not_required"
+    extraction_error: Optional[str] = None
+    extraction_metadata: dict = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 

@@ -85,6 +85,12 @@ def _recent_file_record(
         "uploaded_at": uploaded_at or file_record.get("created_at") or datetime.now(),
         "parse_status": file_record.get("parse_status", "pending"),
         "chunk_count": file_record.get("chunk_count", 0),
+        "extraction_type": file_record.get("extraction_type"),
+        "extraction_status": file_record.get(
+            "extraction_status",
+            "not_required",
+        ),
+        "extraction_error": file_record.get("extraction_error"),
     }
 
 
@@ -97,6 +103,14 @@ async def record_recent_file(manage_db, message: Any) -> list[dict] | None:
     )
     file_id = get_message_file_id(message)
     if not group_id or not file_id:
+        return None
+    message_type = (
+        message.get("type")
+        if isinstance(message, dict)
+        else getattr(message, "type", "")
+    )
+    # 录音消息属于聊天内容，不作为群文件，也不进入群文件 RAG。
+    if message_type == "audio" and "filename" not in _message_content_dict(message):
         return None
 
     file_record = await manage_db.files.find_one({
@@ -145,10 +159,16 @@ async def update_recent_file_status(
     *,
     status: str,
     chunk_count: int | None = None,
+    extraction_type: str | None = None,
+    extraction_error: str | None = None,
 ):
     update = {"recent_files.$.parse_status": status}
     if chunk_count is not None:
         update["recent_files.$.chunk_count"] = chunk_count
+    if extraction_type is not None:
+        update["recent_files.$.extraction_type"] = extraction_type
+    if extraction_error is not None:
+        update["recent_files.$.extraction_error"] = extraction_error
     await manage_db.groups.update_one(
         {"id": group_id, "recent_files.file_id": file_id},
         {"$set": update},

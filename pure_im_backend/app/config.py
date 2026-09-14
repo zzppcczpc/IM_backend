@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     AI_API_KEY: str = ""
     AI_MODEL_NAME: str = ""
     AI_HEALTHCHECK_TIMEOUT: float = 10.0
+    VISION_MODEL_NAME: str = ""
+    VISION_MAX_TOKENS: int = 1024
+    MULTIMODAL_TIMEOUT: float = 120.0
+    ASR_IFLYTEK_URL: str = "https://raasr.xfyun.cn/v2/api"
+    ASR_POLL_INTERVAL: float = 5.0
+    ASR_POLL_TIMEOUT: float = 300.0
+    XF_APPID: str = ""
+    XF_ASR_SECRET_KEY: str = ""
 
     # 知识库向量化：本地加载 BGE-M3，同时生成 dense/sparse 表示。
     EMBEDDING_PROVIDER: str = "local_bge_m3"

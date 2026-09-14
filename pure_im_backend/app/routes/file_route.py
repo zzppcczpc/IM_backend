@@ -108,13 +108,15 @@ async def group_upload_media(
             sender_id=current_user.id,
             duration=duration,
         )
-        from ..utils.group_file_vectorizer import process_group_file
-        background_tasks.add_task(
-            process_group_file,
-            doc_uuid,
-            group_id,
-            manage_db,
-        )
+        # 录音消息只作为聊天消息；通过“上传文件”提交的音频才进入群文件 RAG。
+        if not (message_type == "audio" and duration is not None):
+            from ..utils.group_file_vectorizer import process_group_file
+            background_tasks.add_task(
+                process_group_file,
+                doc_uuid,
+                group_id,
+                manage_db,
+            )
 
         return success(message="上传成功")
     except ValueError as e:

@@ -10,6 +10,10 @@ from .knowledge_base_parser import parse_knowledge_base_file
 from .knowledge_base_vectorizer import vectorize_and_store_file_chunks
 from .log import logger
 from .milvus_service import milvus_service
+from .multimodal_text_extractor import (
+    extract_multimodal_file,
+    is_multimodal_extension,
+)
 from .reranker_service import reranker_service
 
 
@@ -37,14 +41,20 @@ async def process_group_file(file_id: str, group_id: str, manage_db):
         return
 
     extension = _file_extension(file_record)
+    multimodal = is_multimodal_extension(extension)
     path = file_record.get("local_file_path")
-    if extension not in {".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".txt", ".md"}:
+    if extension not in {
+        ".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".txt", ".md",
+        ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a",
+        ".png", ".jpg", ".jpeg", ".webp", ".bmp",
+    }:
         await manage_db.files.update_one(
             {"id": file_id},
             {"$set": {
                 "parse_status": "unsupported",
                 "parse_error": f"暂不支持解析文件类型: {extension or 'unknown'}",
                 "vector_error": None,
+                "extraction_status": "not_required",
                 "updated_at": datetime.now(),
             }},
         )
@@ -62,6 +72,10 @@ async def process_group_file(file_id: str, group_id: str, manage_db):
             "parse_status": "parsing",
             "parse_error": None,
             "vector_error": None,
+            "extraction_type": None,
+            "extraction_status": "processing" if multimodal else "not_required",
+            "extraction_error": None,
+            "extraction_metadata": {},
             "updated_at": datetime.now(),
         }},
     )
@@ -70,23 +84,35 @@ async def process_group_file(file_id: str, group_id: str, manage_db):
         group_id,
         file_id,
         status="parsing",
+        extraction_error="",
     )
 
     try:
         if not path or not os.path.isfile(path):
             raise FileNotFoundError("文件存储路径不存在")
 
-        text, parse_metadata = await asyncio.to_thread(
-            parse_knowledge_base_file,
-            path,
-            extension,
-        )
+        if multimodal:
+            text, parse_metadata = await asyncio.to_thread(
+                extract_multimodal_file,
+                path,
+                extension,
+            )
+        else:
+            text, parse_metadata = await asyncio.to_thread(
+                parse_knowledge_base_file,
+                path,
+                extension,
+            )
         await manage_db.files.update_one(
             {"id": file_id},
             {"$set": {
                 "parse_status": "chunking",
-                "parsed_text": None,
+                "parsed_text": text,
                 "parse_metadata": parse_metadata,
+                "extraction_type": parse_metadata.get("extraction_type"),
+                "extraction_status": "success" if multimodal else "not_required",
+                "extraction_error": None,
+                "extraction_metadata": parse_metadata if multimodal else {},
                 "parsed_at": datetime.now(),
                 "updated_at": datetime.now(),
             }},
@@ -96,6 +122,7 @@ async def process_group_file(file_id: str, group_id: str, manage_db):
             group_id,
             file_id,
             status="chunking",
+            extraction_type=parse_metadata.get("extraction_type"),
         )
 
         chunks = split_text(text)
@@ -156,6 +183,8 @@ async def process_group_file(file_id: str, group_id: str, manage_db):
                 "parse_status": "failed",
                 "parse_error": str(exc)[:1000],
                 "vector_error": str(exc)[:1000],
+                "extraction_status": "failed" if multimodal else "not_required",
+                "extraction_error": str(exc)[:1000] if multimodal else None,
                 "updated_at": datetime.now(),
             }},
         )
@@ -164,6 +193,7 @@ async def process_group_file(file_id: str, group_id: str, manage_db):
             group_id,
             file_id,
             status="failed",
+            extraction_error=str(exc)[:1000] if multimodal else None,
         )
         return
 
@@ -182,6 +212,8 @@ async def process_group_file(file_id: str, group_id: str, manage_db):
         file_id,
         status="success",
         chunk_count=len(chunk_documents),
+        extraction_type=parse_metadata.get("extraction_type"),
+        extraction_error="",
     )
 
 

@@ -23,6 +23,10 @@ class File(BaseModel):
     parsed_at: Optional[datetime] = None
     chunk_count: int = 0
     vector_error: Optional[str] = None
+    extraction_type: Optional[str] = None
+    extraction_status: str = "not_required"
+    extraction_error: Optional[str] = None
+    extraction_metadata: dict = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now())
 
     class Config:

@@ -28,6 +28,10 @@ from ..utils.knowledge_base_parser import parse_knowledge_base_file
 from ..utils.knowledge_base_chunker import split_text
 from ..utils.knowledge_base_searcher import search_knowledge_base_chunks
 from ..utils.knowledge_base_vectorizer import vectorize_and_store_file_chunks
+from ..utils.multimodal_text_extractor import (
+    extract_multimodal_file,
+    is_multimodal_extension,
+)
 from ..utils.log import logger
 
 router = APIRouter()
@@ -49,7 +53,11 @@ def _safe_filename(filename: str) -> str:
 
 
 def _knowledge_base_extensions() -> set[str]:
-    return {".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".txt", ".md"}
+    return {
+        ".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".txt", ".md",
+        ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a",
+        ".png", ".jpg", ".jpeg", ".webp", ".bmp",
+    }
 
 
 def _file_response(document: dict) -> dict:
@@ -64,6 +72,7 @@ async def _process_knowledge_base_file(file_id: str, db):
         return
 
     now = datetime.now()
+    multimodal = is_multimodal_extension(file_record["file_extension"])
     await db.knowledge_base_files.update_one(
         {"id": file_id},
         {
@@ -71,16 +80,26 @@ async def _process_knowledge_base_file(file_id: str, db):
                 "status": "parsing",
                 "error_message": None,
                 "vector_error_message": None,
+                "extraction_status": "processing" if multimodal else "not_required",
+                "extraction_error": None,
                 "updated_at": now,
             },
         },
     )
     await db.knowledge_base_chunks.delete_many({"file_id": file_id})
     try:
-        text, metadata = parse_knowledge_base_file(
-            file_record["local_file_path"],
-            file_record["file_extension"],
-        )
+        if multimodal:
+            text, metadata = await asyncio.to_thread(
+                extract_multimodal_file,
+                file_record["local_file_path"],
+                file_record["file_extension"],
+            )
+        else:
+            text, metadata = await asyncio.to_thread(
+                parse_knowledge_base_file,
+                file_record["local_file_path"],
+                file_record["file_extension"],
+            )
         await db.knowledge_base_files.update_one(
             {"id": file_id},
             {
@@ -88,6 +107,9 @@ async def _process_knowledge_base_file(file_id: str, db):
                     "status": "chunking",
                     "parsed_text": text,
                     "parse_metadata": metadata,
+                    "extraction_type": metadata.get("extraction_type"),
+                    "extraction_status": "success" if multimodal else "not_required",
+                    "extraction_metadata": metadata if multimodal else {},
                     "updated_at": datetime.now(),
                 },
             },
@@ -164,6 +186,8 @@ async def _process_knowledge_base_file(file_id: str, db):
                     "status": "failed",
                     "error_message": str(exc)[:1000],
                     "vector_error_message": None,
+                    "extraction_status": "failed" if multimodal else "not_required",
+                    "extraction_error": str(exc)[:1000] if multimodal else None,
                     "chunk_count": 0,
                     "updated_at": datetime.now(),
                 },
@@ -397,7 +421,10 @@ async def upload_knowledge_base_file(
     if extension not in _knowledge_base_extensions():
         return error(
             code=400,
-            message="不支持的文件类型，仅支持 pdf、docx、pptx、xlsx、csv、txt、md",
+            message=(
+                "不支持的文件类型，仅支持 pdf、docx、pptx、xlsx、csv、txt、md、"
+                "mp3、wav、png、jpg、jpeg 等文件"
+            ),
         )
 
     content = await file.read()
